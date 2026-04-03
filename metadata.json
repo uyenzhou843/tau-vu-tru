@@ -1,0 +1,5 @@
+{
+  "name": "Space Reactor Cleanup",
+  "description": "A game where you use hand gestures to grab space trash and drop it into a reactor.",
+  "requestFramePermissions": ["camera"]
+}
