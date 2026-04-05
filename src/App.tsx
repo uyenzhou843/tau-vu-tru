@@ -1,25 +1,103 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { Rocket, Trophy, Zap, Play, X } from 'lucide-react';
+import confetti from 'canvas-confetti';
+
+// --- Suppress MediaPipe Info Logs ---
+const suppressLog = (originalFn: any) => (...args: any[]) => {
+  const msg = args.join(' ');
+  if (msg.includes('XNNPACK delegate for CPU') || msg.includes('Created TensorFlow Lite')) return;
+  originalFn(...args);
+};
+
+console.info = suppressLog(console.info);
+console.log = suppressLog(console.log);
+console.warn = suppressLog(console.warn);
+console.error = suppressLog(console.error);
+
+// --- Sound Manager ---
+class SoundManager {
+  ctx: AudioContext | null = null;
+
+  init() {
+    if (!this.ctx) {
+      this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    if (this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+  }
+
+  playScoreSound() {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(1200, this.ctx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.1);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.1);
+  }
+
+  playBombSound() {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(150, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(40, this.ctx.currentTime + 0.3);
+    gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.3);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.3);
+  }
+
+  playWinSound() {
+    if (!this.ctx) return;
+    const notes = [440, 554, 659, 880, 1108, 1318];
+    notes.forEach((freq, i) => {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, this.ctx.currentTime + i * 0.1);
+      gain.gain.linearRampToValueAtTime(0.1, this.ctx.currentTime + i * 0.1 + 0.05);
+      gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + i * 0.1 + 0.2);
+      osc.start(this.ctx.currentTime + i * 0.1);
+      osc.stop(this.ctx.currentTime + i * 0.1 + 0.2);
+    });
+  }
+}
+const soundManager = new SoundManager();
 
 // --- Game Constants ---
 const TRASH_EMOJIS = ['🔩', '💥', '☄️'];
 const SATELLITE_EMOJIS = ['🛰️', '📡'];
+const BOMB_EMOJIS = ['💣'];
 const FALL_SPEED = 2;
-const SPAWN_RATE = 1000; // ms
-const PINCH_THRESHOLD = 60; // px
-const GRAB_RADIUS = 150; // px
+const SPAWN_RATE = 600; // ms
+const PINCH_THRESHOLD = 40; // px
+const GRAB_RADIUS = 50; // px
 
 interface GameObject {
   id: number;
-  type: 'trash' | 'satellite';
+  type: 'trash' | 'satellite' | 'bomb';
   emoji: string;
   x: number;
   y: number;
   vx: number;
   vy: number;
   isGrabbed: boolean;
-  grabbedByHandIndex: number | null;
+  grabbedByPlayerIndex: number | null;
+  vacuumedByPlayerIndex: number | null;
   isRegretting: boolean;
 }
 
@@ -28,11 +106,13 @@ function GameCanvas({
   onComboChange,
   reactorRef,
   gameState,
+  numPlayers,
 }: {
-  onScoreChange: (delta: number) => void;
-  onComboChange: (combo: number, isFever: boolean) => void;
+  onScoreChange: (playerIndex: number, delta: number) => void;
+  onComboChange: (playerIndex: number, combo: number, isFever: boolean) => void;
   reactorRef: React.RefObject<HTMLDivElement | null>;
   gameState: 'menu' | 'playing' | 'gameover';
+  numPlayers: number;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -42,32 +122,36 @@ function GameCanvas({
   const lastSpawnTimeRef = useRef<number>(0);
   const requestRef = useRef<number>(0);
   const nextIdRef = useRef<number>(0);
+  const lastLandmarksRef = useRef<any[]>([]);
 
-  const comboRef = useRef<number>(0);
-  const feverEndTimeRef = useRef<number>(0);
-  const feverModeRef = useRef<boolean>(false);
+  const combosRef = useRef<[number, number]>([0, 0]);
+  const feverEndTimesRef = useRef<[number, number]>([0, 0]);
+  const feverModesRef = useRef<[boolean, boolean]>([false, false]);
   const MAX_COMBO = 20;
-  const FEVER_DURATION = 30000;
+  const FEVER_DURATION = 10000;
 
   // Initialize MediaPipe
   useEffect(() => {
     let active = true;
     const initMediaPipe = async () => {
-      const vision = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm'
-      );
-      if (!active) return;
-      const landmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath:
-            'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-          delegate: 'GPU',
-        },
-        runningMode: 'VIDEO',
-        numHands: 2,
-      });
-      if (!active) return;
-      setHandLandmarker(landmarker);
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm'
+        );
+        if (!active) return;
+        const landmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+          },
+          runningMode: 'VIDEO',
+          numHands: 2,
+        });
+        if (!active) return;
+        setHandLandmarker(landmarker);
+      } catch (e) {
+        console.error("Failed to initialize MediaPipe:", e);
+      }
     };
     initMediaPipe();
     return () => {
@@ -109,7 +193,7 @@ function GameCanvas({
 
   // Game Loop
   useEffect(() => {
-    if (!handLandmarker || !videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -128,12 +212,23 @@ function GameCanvas({
 
       // Spawn objects
       if (gameState === 'playing' && time - lastSpawnTimeRef.current > SPAWN_RATE) {
-        const isTrash = Math.random() > 0.3;
-        const emojiList = isTrash ? TRASH_EMOJIS : SATELLITE_EMOJIS;
+        const rand = Math.random();
+        let type: 'trash' | 'satellite' | 'bomb' = 'trash';
+        let emojiList = TRASH_EMOJIS;
+        
+        if (rand > 0.85) {
+          type = 'bomb';
+          emojiList = BOMB_EMOJIS;
+        } else if (rand > 0.7) {
+          type = 'satellite';
+          emojiList = SATELLITE_EMOJIS;
+        }
+
         const emoji = emojiList[Math.floor(Math.random() * emojiList.length)];
+        
         objectsRef.current.push({
           id: nextIdRef.current++,
-          type: isTrash ? 'trash' : 'satellite',
+          type,
           emoji,
           x: Math.random() * (canvas.width - 100) + 50,
           y: -50,
@@ -148,77 +243,86 @@ function GameCanvas({
 
       if (gameState !== 'playing') {
         objectsRef.current = [];
-        if (comboRef.current > 0 || feverModeRef.current) {
-          comboRef.current = 0;
-          feverModeRef.current = false;
-          feverEndTimeRef.current = 0;
-          onComboChange(0, false);
+        if (combosRef.current[0] > 0 || combosRef.current[1] > 0 || feverModesRef.current[0] || feverModesRef.current[1]) {
+          combosRef.current = [0, 0];
+          feverModesRef.current = [false, false];
+          feverEndTimesRef.current = [0, 0];
+          onComboChange(0, 0, false);
+          onComboChange(1, 0, false);
         }
       }
 
       // Process Hand Landmarks
-      let hands: { x: number; y: number; isPinching: boolean; index: number }[] = [];
-      if (videoRef.current && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
-        if (videoRef.current.currentTime !== lastVideoTime) {
-          lastVideoTime = videoRef.current.currentTime;
-          const results = handLandmarker.detectForVideo(videoRef.current, performance.now());
-          
-          if (results.landmarks) {
-          results.landmarks.forEach((landmarks, index) => {
-            // Draw hand
-            const colors = ['rgba(0, 255, 255, 0.5)', 'rgba(255, 0, 255, 0.5)'];
-            const strokeColors = ['rgba(0, 255, 255, 0.8)', 'rgba(255, 0, 255, 0.8)'];
-            ctx.fillStyle = colors[index % 2];
-            ctx.strokeStyle = strokeColors[index % 2];
-            ctx.lineWidth = 2;
+      let currentHands: { x: number; y: number; isPinching: boolean; playerIndex: number }[] = [];
+      if (handLandmarker && videoRef.current && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
+        try {
+          if (videoRef.current.currentTime !== lastVideoTime) {
+            lastVideoTime = videoRef.current.currentTime;
+            const results = handLandmarker.detectForVideo(videoRef.current, performance.now());
+            
+            if (results.landmarks) {
+              lastLandmarksRef.current = results.landmarks;
+            } else {
+              lastLandmarksRef.current = [];
+            }
+          }
+        } catch (e) {
+          console.error("MediaPipe detection error:", e);
+        }
 
-            // Map landmarks to screen
-            const mappedLandmarks = landmarks.map((l) => ({
-              x: (1 - l.x) * canvas.width, // Mirror
-              y: l.y * canvas.height,
-            }));
+        lastLandmarksRef.current.forEach((landmarks, index) => {
+          // Draw hand
+          const colors = ['rgba(0, 255, 255, 0.5)', 'rgba(255, 0, 255, 0.5)'];
+          const strokeColors = ['rgba(0, 255, 255, 0.8)', 'rgba(255, 0, 255, 0.8)'];
+          ctx.fillStyle = colors[index % 2];
+          ctx.strokeStyle = strokeColors[index % 2];
+          ctx.lineWidth = 2;
 
-            // Draw connections (simplified)
-            ctx.beginPath();
-            mappedLandmarks.forEach((l, i) => {
-              if (i === 0) ctx.moveTo(l.x, l.y);
-              else ctx.lineTo(l.x, l.y);
-              ctx.fillRect(l.x - 2, l.y - 2, 4, 4);
-            });
-            ctx.stroke();
+          // Map landmarks to screen
+          const mappedLandmarks = landmarks.map((l: any) => ({
+            x: (1 - l.x) * canvas.width, // Mirror
+            y: l.y * canvas.height,
+          }));
 
+          // Draw connections (simplified)
+          ctx.beginPath();
+          mappedLandmarks.forEach((l: any, i: number) => {
+            if (i === 0) ctx.moveTo(l.x, l.y);
+            else ctx.lineTo(l.x, l.y);
+            ctx.fillRect(l.x - 2, l.y - 2, 4, 4);
+          });
+          ctx.stroke();
+
+          if (mappedLandmarks.length >= 9) {
             // Check pinch (Thumb tip = 4, Index tip = 8)
             const thumb = mappedLandmarks[4];
             const indexFinger = mappedLandmarks[8];
             const dist = Math.hypot(thumb.x - indexFinger.x, thumb.y - indexFinger.y);
             const isPinching = dist < PINCH_THRESHOLD;
 
-            if (isPinching) {
-              console.log('Đang gắp!');
-            }
-
             const pinchCenter = {
               x: (thumb.x + indexFinger.x) / 2,
               y: (thumb.y + indexFinger.y) / 2,
             };
 
+            const playerIndex = numPlayers === 1 ? 0 : (pinchCenter.x < canvas.width / 2 ? 0 : 1);
+
             // Draw pinch indicator
             if (isPinching) {
               ctx.beginPath();
               ctx.arc(pinchCenter.x, pinchCenter.y, 15, 0, 2 * Math.PI);
-              ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+              ctx.fillStyle = playerIndex === 0 ? 'rgba(0, 255, 255, 0.5)' : 'rgba(255, 0, 255, 0.5)';
               ctx.fill();
             }
 
-            hands.push({
+            currentHands.push({
               x: pinchCenter.x,
               y: pinchCenter.y,
               isPinching,
-              index,
+              playerIndex,
             });
-          });
-        }
-      }
+          }
+        });
       }
 
       // Get Reactor Bounds
@@ -231,127 +335,126 @@ function GameCanvas({
         reactorCenterY = (reactorBounds.top + reactorBounds.bottom) / 2;
       }
 
-      const isFever = time < feverEndTimeRef.current;
-      if (isFever !== feverModeRef.current) {
-        feverModeRef.current = isFever;
-        if (!isFever) {
-          comboRef.current = 0;
-          onComboChange(0, false);
-        } else {
-          onComboChange(MAX_COMBO, true);
+      // Fever mode check
+      for (let p = 0; p < 2; p++) {
+        const isFever = time < feverEndTimesRef.current[p];
+        if (isFever !== feverModesRef.current[p]) {
+          feverModesRef.current[p] = isFever;
+          if (!isFever) {
+            combosRef.current[p] = 0;
+            onComboChange(p, 0, false);
+          } else {
+            onComboChange(p, MAX_COMBO, true);
+          }
         }
       }
+
+      const handleObjectScored = (obj: GameObject, playerIndex: number) => {
+        if (obj.type === 'trash') {
+          soundManager.playScoreSound();
+          onScoreChange(playerIndex, 10);
+          combosRef.current[playerIndex] = Math.min(combosRef.current[playerIndex] + 1, MAX_COMBO);
+          if (combosRef.current[playerIndex] >= MAX_COMBO && !feverModesRef.current[playerIndex]) {
+            feverEndTimesRef.current[playerIndex] = time + FEVER_DURATION;
+            feverModesRef.current[playerIndex] = true;
+            onComboChange(playerIndex, MAX_COMBO, true);
+          } else {
+            onComboChange(playerIndex, combosRef.current[playerIndex], feverModesRef.current[playerIndex]);
+          }
+        } else if (obj.type === 'bomb') {
+          soundManager.playBombSound();
+          onScoreChange(playerIndex, -20);
+          combosRef.current[playerIndex] = 0;
+          onComboChange(playerIndex, 0, false);
+        } else {
+          soundManager.playBombSound();
+          onScoreChange(playerIndex, -10);
+          combosRef.current[playerIndex] = 0;
+          onComboChange(playerIndex, 0, false);
+        }
+      };
 
       // Update Objects
       for (let i = objectsRef.current.length - 1; i >= 0; i--) {
         const obj = objectsRef.current[i];
 
-        if (isFever) {
-          obj.isGrabbed = false;
-          obj.grabbedByHandIndex = null;
+        // 1. Vacuum (Fever)
+        if (obj.vacuumedByPlayerIndex === null) {
+          for (const hand of currentHands) {
+            if (feverModesRef.current[hand.playerIndex]) {
+              const dist = Math.hypot(obj.x - hand.x, obj.y - hand.y);
+              if (dist < 250) { // Vacuum radius
+                obj.vacuumedByPlayerIndex = hand.playerIndex;
+                obj.isGrabbed = false;
+                break;
+              }
+            }
+          }
+        }
 
+        if (obj.vacuumedByPlayerIndex !== null) {
           const dx = reactorCenterX - obj.x;
           const dy = reactorCenterY - obj.y;
           const dist = Math.hypot(dx, dy);
-          
-          let pushed = false;
-          for (const hand of hands) {
-            const distToHand = Math.hypot(obj.x - hand.x, obj.y - hand.y);
-            if (distToHand < 200) {
-              if (dist > 0) {
-                obj.x += (dx / dist) * 30;
-                obj.y += (dy / dist) * 30;
-                pushed = true;
-              }
-            }
-          }
-
-          if (!pushed && dist > 0) {
-            obj.x += (dx / dist) * 5;
-            obj.y += (dy / dist) * 5;
-          }
-
           if (dist < 50) {
-            onScoreChange(obj.type === 'trash' ? 10 : -10);
+            handleObjectScored(obj, obj.vacuumedByPlayerIndex);
             objectsRef.current.splice(i, 1);
-            continue;
+          } else {
+            obj.x += (dx / dist) * 25;
+            obj.y += (dy / dist) * 25;
+          }
+          continue;
+        }
+
+        // 2. Normal Grab
+        if (obj.isGrabbed) {
+          const grabbingHand = currentHands.find((h) => h.playerIndex === obj.grabbedByPlayerIndex);
+          if (grabbingHand && grabbingHand.isPinching) {
+            obj.x = grabbingHand.x;
+            obj.y = grabbingHand.y;
+          } else {
+            obj.isGrabbed = false;
+            if (
+              obj.x > reactorBounds.left &&
+              obj.x < reactorBounds.right &&
+              obj.y > reactorBounds.top &&
+              obj.y < reactorBounds.bottom
+            ) {
+              handleObjectScored(obj, obj.grabbedByPlayerIndex!);
+              objectsRef.current.splice(i, 1);
+              continue;
+            }
+            obj.grabbedByPlayerIndex = null;
           }
         } else {
-          // Check Grabbing
-          if (obj.isGrabbed) {
-            const grabbingHand = hands.find((h) => h.index === obj.grabbedByHandIndex);
-            if (grabbingHand && grabbingHand.isPinching) {
-              // Follow hand
-              obj.x = grabbingHand.x;
-              obj.y = grabbingHand.y;
-            } else {
-              // Release
-              obj.isGrabbed = false;
-              obj.grabbedByHandIndex = null;
-              
-              // Check if dropped in reactor
-              if (
-                obj.x > reactorBounds.left &&
-                obj.x < reactorBounds.right &&
-                obj.y > reactorBounds.top &&
-                obj.y < reactorBounds.bottom
-              ) {
-                // Scored!
-                onScoreChange(obj.type === 'trash' ? 10 : -10);
-                if (obj.type === 'trash') {
-                  comboRef.current = Math.min(comboRef.current + 1, MAX_COMBO);
-                  if (comboRef.current >= MAX_COMBO) {
-                    feverEndTimeRef.current = time + FEVER_DURATION;
-                    feverModeRef.current = true;
-                    onComboChange(MAX_COMBO, true);
-                  } else {
-                    onComboChange(comboRef.current, false);
-                  }
-                } else {
-                  comboRef.current = 0;
-                  onComboChange(0, false);
-                }
-                objectsRef.current.splice(i, 1);
-                continue;
-              }
-            }
+          obj.x += obj.vx;
+          obj.y += obj.vy;
+
+          if (obj.isRegretting) {
+            obj.vy += 0.05;
           } else {
-            // Fall
-            obj.x += obj.vx;
-            obj.y += obj.vy;
-
-            if (obj.isRegretting) {
-              obj.vy += 0.05; // Gravity
-            } else {
-              // Check regret
-              if (obj.y > reactorBounds.top && obj.y < reactorBounds.bottom) {
-                if (obj.x < reactorBounds.left && obj.x > reactorBounds.left - 60) {
-                  obj.isRegretting = true;
-                  obj.vx = -2;
-                  obj.vy = -3;
-                } else if (obj.x > reactorBounds.right && obj.x < reactorBounds.right + 60) {
-                  obj.isRegretting = true;
-                  obj.vx = 2;
-                  obj.vy = -3;
-                }
+            if (obj.y > reactorBounds.top && obj.y < reactorBounds.bottom) {
+              if (obj.x < reactorBounds.left && obj.x > reactorBounds.left - 60) {
+                obj.isRegretting = true;
+                obj.vx = -2;
+                obj.vy = -3;
+              } else if (obj.x > reactorBounds.right && obj.x < reactorBounds.right + 60) {
+                obj.isRegretting = true;
+                obj.vx = 2;
+                obj.vy = -3;
               }
             }
+          }
 
-            // Try to grab
-            for (const hand of hands) {
-              if (hand.isPinching) {
-                const dist = Math.hypot(obj.x - hand.x, obj.y - hand.y);
-                if (dist < GRAB_RADIUS) {
-                  // Check if hand is already grabbing something
-                  const handAlreadyGrabbing = objectsRef.current.some(o => o.isGrabbed && o.grabbedByHandIndex === hand.index);
-                  if (!handAlreadyGrabbing) {
-                    obj.isGrabbed = true;
-                    obj.grabbedByHandIndex = hand.index;
-                    obj.isRegretting = false;
-                    obj.vx = 0;
-                    break;
-                  }
-                }
+          for (const hand of currentHands) {
+            if (hand.isPinching) {
+              const dist = Math.hypot(obj.x - hand.x, obj.y - hand.y);
+              if (dist < GRAB_RADIUS) {
+                obj.isGrabbed = true;
+                obj.grabbedByPlayerIndex = hand.playerIndex;
+                obj.isRegretting = false;
+                obj.vx = 0;
+                break;
               }
             }
           }
@@ -375,7 +478,7 @@ function GameCanvas({
 
     requestRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(requestRef.current);
-  }, [handLandmarker, onScoreChange, reactorRef, gameState]);
+  }, [handLandmarker, onScoreChange, reactorRef, gameState, numPlayers]);
 
   return (
     <>
@@ -394,24 +497,36 @@ function GameCanvas({
 }
 
 export default function App() {
-  const [score, setScore] = useState(0);
-  const [combo, setCombo] = useState(0);
-  const [isFever, setIsFever] = useState(false);
+  const [scores, setScores] = useState<[number, number]>([0, 0]);
+  const [combos, setCombos] = useState<[number, number]>([0, 0]);
+  const [feverModes, setFeverModes] = useState<[boolean, boolean]>([false, false]);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [gameState, setGameState] = useState<'menu' | 'playing' | 'gameover'>('menu');
   const [gameDuration, setGameDuration] = useState<number>(5);
+  const [numPlayers, setNumPlayers] = useState<number>(1);
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [player1Name, setPlayer1Name] = useState('');
   const [player2Name, setPlayer2Name] = useState('');
   const [leaderboard, setLeaderboard] = useState<{name: string, score: number}[]>([]);
   const reactorRef = useRef<HTMLDivElement>(null);
 
+  const scoresRef = useRef(scores);
+  useEffect(() => { scoresRef.current = scores; }, [scores]);
+
   useEffect(() => {
     if (gameState === 'playing') {
       const timer = setInterval(() => {
         setTimeRemaining((prev) => {
           if (prev <= 1) {
+            clearInterval(timer);
             setGameState('gameover');
+            soundManager.playWinSound();
+            confetti({
+              particleCount: 150,
+              spread: 100,
+              origin: { y: 0.6 },
+              colors: ['#00FFFF', '#FF00FF', '#FFFFFF']
+            });
             return 0;
           }
           return prev - 1;
@@ -420,21 +535,24 @@ export default function App() {
       return () => clearInterval(timer);
     } else if (gameState === 'gameover') {
       // Add to leaderboard when game is over
-      if (score > 0 && (player1Name.trim() !== '' || player2Name.trim() !== '')) {
-        setLeaderboard(prev => {
-          const name = player1Name.trim() || player2Name.trim() || 'UNKNOWN';
-          const newLb = [...prev, { name, score }];
-          // Sort descending and keep top 5
-          return newLb.sort((a, b) => b.score - a.score).slice(0, 5);
-        });
-      }
+      setLeaderboard(prev => {
+        let newLb = [...prev];
+        if (scoresRef.current[0] > 0) {
+          newLb.push({ name: player1Name.trim() || 'PLAYER 1', score: scoresRef.current[0] });
+        }
+        if (scoresRef.current[1] > 0) {
+          newLb.push({ name: player2Name.trim() || 'PLAYER 2', score: scoresRef.current[1] });
+        }
+        return newLb.sort((a, b) => b.score - a.score).slice(0, 5);
+      });
     }
-  }, [gameState, score, player1Name, player2Name]);
+  }, [gameState, player1Name, player2Name]);
 
   const startGame = () => {
-    setScore(0);
-    setCombo(0);
-    setIsFever(false);
+    soundManager.init();
+    setScores([0, 0]);
+    setCombos([0, 0]);
+    setFeverModes([false, false]);
     setTimeRemaining(gameDuration * 60);
     setGameState('playing');
   };
@@ -445,18 +563,30 @@ export default function App() {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  const handleScoreChange = useCallback((delta: number) => {
-    setScore((prev) => prev + delta);
+  const handleScoreChange = useCallback((playerIndex: number, delta: number) => {
+    setScores((prev) => {
+      const newScores = [...prev] as [number, number];
+      newScores[playerIndex] += delta;
+      return newScores;
+    });
   }, []);
 
-  const handleComboChange = useCallback((newCombo: number, fever: boolean) => {
-    setCombo(newCombo);
-    setIsFever(fever);
+  const handleComboChange = useCallback((playerIndex: number, newCombo: number, fever: boolean) => {
+    setCombos((prev) => {
+      const newCombos = [...prev] as [number, number];
+      newCombos[playerIndex] = newCombo;
+      return newCombos;
+    });
+    setFeverModes((prev) => {
+      const newFever = [...prev] as [boolean, boolean];
+      newFever[playerIndex] = fever;
+      return newFever;
+    });
   }, []);
 
   return (
     <div className="bg-background text-on-surface font-body overflow-hidden select-none min-h-screen">
-      <GameCanvas onScoreChange={handleScoreChange} onComboChange={handleComboChange} reactorRef={reactorRef} gameState={gameState} />
+      <GameCanvas onScoreChange={handleScoreChange} onComboChange={handleComboChange} reactorRef={reactorRef} gameState={gameState} numPlayers={numPlayers} />
 
       {/* AR Background Layer */}
       <div className="fixed inset-0 z-0 bg-black overflow-hidden">
@@ -494,14 +624,18 @@ export default function App() {
               placeholder="PLAYER 1 NAME" 
               className="bg-black/50 border border-white/20 rounded px-3 py-1 text-xs text-white focus:outline-none focus:border-primary pointer-events-auto"
             />
-            <span className="text-white/50 text-xs">VS</span>
-            <input 
-              type="text" 
-              value={player2Name}
-              onChange={(e) => setPlayer2Name(e.target.value)}
-              placeholder="PLAYER 2 NAME" 
-              className="bg-black/50 border border-white/20 rounded px-3 py-1 text-xs text-white focus:outline-none focus:border-secondary pointer-events-auto"
-            />
+            {numPlayers === 2 && (
+              <>
+                <span className="text-white/50 text-xs">VS</span>
+                <input 
+                  type="text" 
+                  value={player2Name}
+                  onChange={(e) => setPlayer2Name(e.target.value)}
+                  placeholder="PLAYER 2 NAME" 
+                  className="bg-black/50 border border-white/20 rounded px-3 py-1 text-xs text-white focus:outline-none focus:border-secondary pointer-events-auto"
+                />
+              </>
+            )}
           </div>
         </div>
 
@@ -531,56 +665,68 @@ export default function App() {
       <main className="relative z-20 h-screen w-full pt-20 flex flex-col pointer-events-none">
         {/* Top HUD Layout (Score & Stats) */}
         {gameState === 'playing' && (
-          <>
-            <div className="absolute top-24 left-4 md:left-8 z-30 pointer-events-auto">
-              {/* Galactic Score */}
-              <div
-                className="glass-panel neon-border-primary px-5 py-3 rounded-xl relative overflow-hidden group min-w-[200px] flex items-center gap-5 shadow-[0_0_20px_rgba(255,20,147,0.2)]"
-                style={{ boxShadow: '0 0 20px rgba(255, 0, 0, 0.2)' }}
-              >
-                <div className="absolute -top-6 -right-6 w-16 h-16 bg-primary/20 blur-2xl rounded-full"></div>
-                <div className="flex flex-col">
-                  <div className="text-[8px] font-headline tracking-[0.15rem] text-primary font-black mb-1 uppercase">
-                    GALACTIC SCORE
-                  </div>
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-2xl font-headline font-black text-white glow-primary tracking-tighter animate-score">
-                      {score.toLocaleString()}
-                    </span>
-                    <span className="text-primary font-bold text-[8px]">XP</span>
-                  </div>
-                  <div className="mt-2 h-1 w-24 bg-white/10 rounded-full relative overflow-hidden">
-                    <div className="absolute inset-0 bg-gradient-to-r from-primary via-white to-primary animate-pulse w-3/4 shadow-[0_0_8px_#FF0000]"></div>
-                  </div>
-                </div>
+          <div className="absolute top-24 left-0 w-full px-4 md:px-8 z-30 pointer-events-auto flex justify-between items-start">
+            {/* Player 1 Stats (Left) */}
+            <div className="flex flex-col gap-4 w-64">
+              <div className="glass-panel px-6 py-3 rounded-2xl border border-primary/30 flex flex-col items-start bg-primary/5 shadow-[0_0_20px_rgba(0,185,209,0.2)]">
+                <span className="font-headline text-primary/80 text-xs tracking-[0.2em] mb-1">{player1Name || 'PLAYER 1'}</span>
+                <span className="font-mono text-3xl font-black text-white glow-primary">
+                  {scores[0].toLocaleString()}
+                </span>
               </div>
-
-              {/* Combo Meter */}
-              <div className="mt-4 glass-panel px-5 py-3 rounded-xl shadow-[0_0_15px_rgba(0,0,0,0.5)]">
-                <div className="flex justify-between text-[10px] font-headline text-white/70 font-bold mb-2 uppercase tracking-widest">
-                  <span>COMBO METER</span>
-                  {isFever ? <span className="text-[#FF00FF] animate-pulse font-black drop-shadow-[0_0_5px_#FF00FF]">FEVER MODE!</span> : <span>{combo}/20</span>}
+              <div className="flex flex-col gap-2">
+                <div className="flex justify-between items-end">
+                  <span className="font-headline font-bold text-white tracking-widest text-xs">COMBO</span>
+                  <span className={`font-mono font-bold text-xs ${feverModes[0] ? 'text-primary animate-pulse' : 'text-white/70'}`}>
+                    {feverModes[0] ? 'MAX' : `${combos[0]}/20`}
+                  </span>
                 </div>
-                <div className="h-2 w-full bg-white/10 rounded-full relative overflow-hidden">
+                <div className="h-2 bg-black/50 rounded-full overflow-hidden border border-white/10 p-0.5">
                   <div 
-                    className={`absolute inset-y-0 left-0 transition-all duration-300 ${isFever ? 'bg-gradient-to-r from-[#FF00FF] to-[#00FFFF] animate-pulse w-full' : 'bg-secondary'}`}
-                    style={{ width: isFever ? '100%' : `${(combo / 20) * 100}%` }}
+                    className={`h-full rounded-full transition-all duration-300 ${feverModes[0] ? 'bg-primary shadow-[0_0_10px_rgba(0,185,209,0.8)]' : 'bg-primary/50'}`}
+                    style={{ width: `${(combos[0] / 20) * 100}%` }}
                   ></div>
                 </div>
+                {feverModes[0] && <div className="text-primary text-[10px] font-bold tracking-widest animate-pulse mt-1">FEVER MODE!</div>}
               </div>
             </div>
 
-            <div className="absolute top-24 right-4 md:right-8 z-30 pointer-events-auto">
-              <div className="glass-panel neon-border-secondary px-5 py-3 rounded-xl relative overflow-hidden group min-w-[150px] flex flex-col items-center shadow-[0_0_20px_rgba(0,185,209,0.2)]">
-                <div className="text-[8px] font-headline tracking-[0.15rem] text-secondary font-black mb-1 uppercase">
-                  TIME REMAINING
-                </div>
-                <div className="text-2xl font-headline font-black text-white glow-secondary tracking-tighter">
-                  {formatTime(timeRemaining)}
-                </div>
+            {/* Time (Center) */}
+            <div className="flex flex-col items-center gap-2">
+              <div className="font-mono text-4xl font-black text-white tracking-widest drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]">
+                {formatTime(timeRemaining)}
               </div>
             </div>
-          </>
+
+            {/* Player 2 Stats (Right) */}
+            {numPlayers === 2 ? (
+              <div className="flex flex-col gap-4 w-64 items-end">
+                <div className="glass-panel px-6 py-3 rounded-2xl border border-secondary/30 flex flex-col items-end bg-secondary/5 shadow-[0_0_20px_rgba(255,0,255,0.2)]">
+                  <span className="font-headline text-secondary/80 text-xs tracking-[0.2em] mb-1">{player2Name || 'PLAYER 2'}</span>
+                  <span className="font-mono text-3xl font-black text-white shadow-[0_0_15px_rgba(255,0,255,0.5)]">
+                    {scores[1].toLocaleString()}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-2 w-full">
+                  <div className="flex justify-between items-end">
+                    <span className="font-headline font-bold text-white tracking-widest text-xs">COMBO</span>
+                    <span className={`font-mono font-bold text-xs ${feverModes[1] ? 'text-secondary animate-pulse' : 'text-white/70'}`}>
+                      {feverModes[1] ? 'MAX' : `${combos[1]}/20`}
+                    </span>
+                  </div>
+                  <div className="h-2 bg-black/50 rounded-full overflow-hidden border border-white/10 p-0.5">
+                    <div 
+                      className={`h-full rounded-full transition-all duration-300 ${feverModes[1] ? 'bg-secondary shadow-[0_0_10px_rgba(255,0,255,0.8)]' : 'bg-secondary/50'}`}
+                      style={{ width: `${(combos[1] / 20) * 100}%` }}
+                    ></div>
+                  </div>
+                  {feverModes[1] && <div className="text-secondary text-[10px] font-bold tracking-widest animate-pulse mt-1 text-right">FEVER MODE!</div>}
+                </div>
+              </div>
+            ) : (
+              <div className="w-64"></div>
+            )}
+          </div>
         )}
 
         {/* Central Game Entry & Reactor Section */}
@@ -590,7 +736,7 @@ export default function App() {
             ref={reactorRef}
             className="relative w-96 h-96 flex items-center justify-center pointer-events-auto"
           >
-            {isFever ? (
+            {(feverModes[0] || feverModes[1]) ? (
               <div className="absolute inset-0 bg-black rounded-full shadow-[0_0_150px_#FF00FF] animate-pulse flex items-center justify-center overflow-hidden">
                 <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(255,0,255,0.8)_0%,rgba(0,0,0,1)_70%)] animate-spin" style={{ animationDuration: '3s' }}></div>
                 <div className="w-full h-full rounded-full border-8 border-[#00FFFF] border-dashed animate-spin" style={{ animationDuration: '2s', animationDirection: 'reverse' }}></div>
@@ -640,10 +786,25 @@ export default function App() {
                 NEW GAME
               </h2>
               <p className="font-body text-white/60 text-[10px] uppercase font-bold tracking-widest">
-                SELECT MISSION DURATION
+                SELECT PLAYERS & DURATION
               </p>
             </div>
             
+            <div className="flex gap-4 w-full">
+              <button 
+                onClick={() => setNumPlayers(1)}
+                className={`flex-1 py-4 rounded-xl border-2 transition-all font-headline font-black tracking-widest text-sm uppercase ${numPlayers === 1 ? 'bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(0,185,209,0.3)]' : 'bg-black/60 border-white/20 text-white/50 hover:border-white/50'}`}
+              >
+                1 PLAYER
+              </button>
+              <button 
+                onClick={() => setNumPlayers(2)}
+                className={`flex-1 py-4 rounded-xl border-2 transition-all font-headline font-black tracking-widest text-sm uppercase ${numPlayers === 2 ? 'bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(0,185,209,0.3)]' : 'bg-black/60 border-white/20 text-white/50 hover:border-white/50'}`}
+              >
+                2 PLAYERS
+              </button>
+            </div>
+
             <div className="flex gap-4 w-full">
               <button 
                 onClick={() => setGameDuration(5)}
@@ -682,9 +843,25 @@ export default function App() {
               <h2 className="font-headline text-white text-4xl font-black tracking-[0.4rem] uppercase glow-primary mb-2">
                 MISSION OVER
               </h2>
-              <p className="font-body text-white/60 text-[12px] uppercase font-bold tracking-widest">
-                FINAL SCORE: <span className="text-white text-lg">{score.toLocaleString()} XP</span>
-              </p>
+              <div className="flex flex-col gap-2 mt-4">
+                <p className="font-body text-primary text-sm uppercase font-bold tracking-widest">
+                  {player1Name || 'PLAYER 1'}: <span className="text-white text-xl">{scores[0].toLocaleString()} XP</span>
+                </p>
+                {numPlayers === 2 && (
+                  <p className="font-body text-secondary text-sm uppercase font-bold tracking-widest">
+                    {player2Name || 'PLAYER 2'}: <span className="text-white text-xl">{scores[1].toLocaleString()} XP</span>
+                  </p>
+                )}
+              </div>
+              {numPlayers === 2 ? (
+                <>
+                  {scores[0] > scores[1] && <p className="text-primary font-bold mt-4 text-3xl tracking-widest glow-primary">{player1Name || 'PLAYER 1'} WINS!</p>}
+                  {scores[1] > scores[0] && <p className="text-secondary font-bold mt-4 text-3xl tracking-widest glow-secondary">{player2Name || 'PLAYER 2'} WINS!</p>}
+                  {scores[0] === scores[1] && <p className="text-white font-bold mt-4 text-3xl tracking-widest">IT'S A TIE!</p>}
+                </>
+              ) : (
+                <p className="text-white font-bold mt-4 text-3xl tracking-widest">WELL DONE!</p>
+              )}
             </div>
             
             <button 
