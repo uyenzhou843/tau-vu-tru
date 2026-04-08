@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
-import { Rocket, Trophy, Zap, Play, X } from 'lucide-react';
+import { Rocket, Trophy, Zap, Play, X, AlertTriangle } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 // --- Suppress MediaPipe Info Logs ---
@@ -83,9 +83,9 @@ const TRASH_EMOJIS = ['🔩', '💥', '☄️'];
 const SATELLITE_EMOJIS = ['🛰️', '📡'];
 const BOMB_EMOJIS = ['💣'];
 const FALL_SPEED = 2;
-const SPAWN_RATE = 600; // ms
+const SPAWN_RATE = 1200; // ms
 const PINCH_THRESHOLD = 40; // px
-const GRAB_RADIUS = 50; // px
+const GRAB_RADIUS = 25; // px
 
 interface GameObject {
   id: number;
@@ -143,6 +143,7 @@ function GameCanvas({
           baseOptions: {
             modelAssetPath:
               'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+            delegate: 'GPU',
           },
           runningMode: 'VIDEO',
           numHands: 2,
@@ -200,6 +201,7 @@ function GameCanvas({
     if (!ctx) return;
 
     let lastVideoTime = -1;
+    let lastDetectionTime = 0;
 
     const loop = (time: number) => {
       // Resize canvas to match window
@@ -235,7 +237,8 @@ function GameCanvas({
           vx: 0,
           vy: FALL_SPEED + Math.random() * 2,
           isGrabbed: false,
-          grabbedByHandIndex: null,
+          grabbedByPlayerIndex: null,
+          vacuumedByPlayerIndex: null,
           isRegretting: false,
         });
         lastSpawnTimeRef.current = time;
@@ -256,8 +259,9 @@ function GameCanvas({
       let currentHands: { x: number; y: number; isPinching: boolean; playerIndex: number }[] = [];
       if (handLandmarker && videoRef.current && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
         try {
-          if (videoRef.current.currentTime !== lastVideoTime) {
+          if (videoRef.current.currentTime !== lastVideoTime && time - lastDetectionTime > 50) {
             lastVideoTime = videoRef.current.currentTime;
+            lastDetectionTime = time;
             const results = handLandmarker.detectForVideo(videoRef.current, performance.now());
             
             if (results.landmarks) {
@@ -375,6 +379,15 @@ function GameCanvas({
       };
 
       // Update Objects
+      const playersHolding = new Set<number>();
+      
+      // First pass: identify players already holding objects
+      for (const obj of objectsRef.current) {
+        if (obj.isGrabbed && obj.grabbedByPlayerIndex !== null) {
+          playersHolding.add(obj.grabbedByPlayerIndex);
+        }
+      }
+
       for (let i = objectsRef.current.length - 1; i >= 0; i--) {
         const obj = objectsRef.current[i];
 
@@ -447,13 +460,14 @@ function GameCanvas({
           }
 
           for (const hand of currentHands) {
-            if (hand.isPinching) {
+            if (hand.isPinching && !playersHolding.has(hand.playerIndex)) {
               const dist = Math.hypot(obj.x - hand.x, obj.y - hand.y);
               if (dist < GRAB_RADIUS) {
                 obj.isGrabbed = true;
                 obj.grabbedByPlayerIndex = hand.playerIndex;
                 obj.isRegretting = false;
                 obj.vx = 0;
+                playersHolding.add(hand.playerIndex);
                 break;
               }
             }
@@ -818,6 +832,14 @@ export default function App() {
               >
                 10 MIN
               </button>
+            </div>
+
+            <div className="w-full bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
+              <p className="text-yellow-500/90 font-body text-xs leading-relaxed text-left">
+                <strong className="font-bold block mb-1">PRO TIP</strong>
+                When dropping trash into the reactor, make sure to <strong>open your fingers wide</strong> to release it properly!
+              </p>
             </div>
 
             <button 
