@@ -125,6 +125,8 @@ function GameCanvas({
   const lastLandmarksRef = useRef<any[]>([]);
 
   const combosRef = useRef<[number, number]>([0, 0]);
+  const consecutiveTrashRef = useRef<[number, number]>([0, 0]);
+  const comboVisualsRef = useRef<{ x: number, y: number, time: number, playerIndex: number, isBig: boolean, level: number }[]>([]);
   const feverEndTimesRef = useRef<[number, number]>([0, 0]);
   const feverModesRef = useRef<[boolean, boolean]>([false, false]);
   const MAX_COMBO = 20;
@@ -356,7 +358,37 @@ function GameCanvas({
       const handleObjectScored = (obj: GameObject, playerIndex: number) => {
         if (obj.type === 'trash') {
           soundManager.playScoreSound();
-          onScoreChange(playerIndex, 10);
+          
+          consecutiveTrashRef.current[playerIndex]++;
+          const comboLevel = Math.floor(consecutiveTrashRef.current[playerIndex] / 3);
+          let scoreDelta = 10;
+          
+          if (comboLevel >= 1) {
+            scoreDelta *= 2;
+          }
+
+          // Trigger visual
+          if (consecutiveTrashRef.current[playerIndex] > 0 && consecutiveTrashRef.current[playerIndex] % 3 === 0) {
+            comboVisualsRef.current.push({
+              x: obj.x,
+              y: obj.y,
+              time: Date.now(),
+              playerIndex,
+              isBig: true,
+              level: comboLevel
+            });
+          } else if (comboLevel >= 1) {
+            comboVisualsRef.current.push({
+              x: obj.x,
+              y: obj.y,
+              time: Date.now(),
+              playerIndex,
+              isBig: false,
+              level: comboLevel
+            });
+          }
+
+          onScoreChange(playerIndex, scoreDelta);
           combosRef.current[playerIndex] = Math.min(combosRef.current[playerIndex] + 1, MAX_COMBO);
           if (combosRef.current[playerIndex] >= MAX_COMBO && !feverModesRef.current[playerIndex]) {
             feverEndTimesRef.current[playerIndex] = time + FEVER_DURATION;
@@ -369,11 +401,13 @@ function GameCanvas({
           soundManager.playBombSound();
           onScoreChange(playerIndex, -20);
           combosRef.current[playerIndex] = 0;
+          consecutiveTrashRef.current[playerIndex] = 0;
           onComboChange(playerIndex, 0, false);
         } else {
           soundManager.playBombSound();
           onScoreChange(playerIndex, -10);
           combosRef.current[playerIndex] = 0;
+          consecutiveTrashRef.current[playerIndex] = 0;
           onComboChange(playerIndex, 0, false);
         }
       };
@@ -476,6 +510,11 @@ function GameCanvas({
 
         // Remove if off screen
         if (obj.y > canvas.height + 50 || obj.x < -50 || obj.x > canvas.width + 50) {
+          if (obj.type === 'trash' && !obj.isGrabbed && obj.vacuumedByPlayerIndex === null) {
+            // Reset combo if trash falls
+            consecutiveTrashRef.current[0] = 0;
+            consecutiveTrashRef.current[1] = 0;
+          }
           objectsRef.current.splice(i, 1);
           continue;
         }
@@ -485,6 +524,46 @@ function GameCanvas({
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(obj.emoji, obj.x, obj.y);
+      }
+
+      // Draw Combo Visuals
+      const now = Date.now();
+      for (let i = comboVisualsRef.current.length - 1; i >= 0; i--) {
+        const visual = comboVisualsRef.current[i];
+        const elapsed = now - visual.time;
+        const duration = visual.isBig ? 1500 : 800;
+        
+        if (elapsed > duration) {
+          comboVisualsRef.current.splice(i, 1);
+          continue;
+        }
+
+        const opacity = 1 - elapsed / duration;
+        const scale = visual.isBig ? 1 + Math.sin(elapsed / 200) * 0.2 : 1;
+        const yOffset = (elapsed / duration) * (visual.isBig ? 150 : 80);
+        
+        ctx.save();
+        ctx.translate(visual.x, visual.y - 50 - yOffset);
+        ctx.scale(scale, scale);
+        ctx.globalAlpha = opacity;
+        
+        const color = visual.playerIndex === 0 ? '#00FFFF' : '#FF00FF';
+        ctx.fillStyle = color;
+        ctx.shadowBlur = visual.isBig ? 30 : 15;
+        ctx.shadowColor = color;
+        ctx.textAlign = 'center';
+        
+        if (visual.isBig) {
+          ctx.font = 'black 60px Orbitron, sans-serif';
+          ctx.fillText(`COMBO ${visual.level}!!`, 0, 0);
+          ctx.font = 'bold 25px Orbitron, sans-serif';
+          ctx.fillText('SCORE x2 ACTIVE', 0, 40);
+        } else {
+          ctx.font = 'bold 35px Orbitron, sans-serif';
+          ctx.fillText('x2!', 0, 0);
+        }
+        
+        ctx.restore();
       }
 
       requestRef.current = requestAnimationFrame(loop);
@@ -521,6 +600,7 @@ export default function App() {
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [player1Name, setPlayer1Name] = useState('');
   const [player2Name, setPlayer2Name] = useState('');
+  const [showNameEntry, setShowNameEntry] = useState(false);
   const [leaderboard, setLeaderboard] = useState<{name: string, score: number}[]>([]);
   const reactorRef = useRef<HTMLDivElement>(null);
 
@@ -563,12 +643,20 @@ export default function App() {
   }, [gameState, player1Name, player2Name]);
 
   const startGame = () => {
+    setShowNameEntry(true);
+  };
+
+  const confirmNamesAndStart = () => {
+    if (numPlayers === 1 && !player1Name.trim()) return;
+    if (numPlayers === 2 && (!player1Name.trim() || !player2Name.trim())) return;
+    
     soundManager.init();
     setScores([0, 0]);
     setCombos([0, 0]);
     setFeverModes([false, false]);
     setTimeRemaining(gameDuration * 60);
     setGameState('playing');
+    setShowNameEntry(false);
   };
 
   const formatTime = (seconds: number) => {
@@ -690,7 +778,7 @@ export default function App() {
               </div>
               <div className="flex flex-col gap-2">
                 <div className="flex justify-between items-end">
-                  <span className="font-headline font-bold text-white tracking-widest text-xs">COMBO</span>
+                  <span className="font-headline font-bold text-white tracking-widest text-xs">FEVER MODE</span>
                   <span className={`font-mono font-bold text-xs ${feverModes[0] ? 'text-primary animate-pulse' : 'text-white/70'}`}>
                     {feverModes[0] ? 'MAX' : `${combos[0]}/20`}
                   </span>
@@ -790,6 +878,68 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      {/* Name Entry Modal */}
+      {showNameEntry && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl pointer-events-auto">
+          <div className="glass-panel border-primary/50 w-full max-w-md rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(0,185,209,0.3)] p-8 flex flex-col items-center gap-8">
+            <div className="text-center">
+              <h2 className="font-headline text-white text-3xl font-black tracking-[0.4rem] uppercase glow-primary mb-2">
+                IDENTIFY PILOTS
+              </h2>
+              <p className="font-body text-white/60 text-[10px] uppercase font-bold tracking-widest">
+                ENTER YOUR CALLSIGNS TO BEGIN
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-6 w-full">
+              <div className="flex flex-col gap-2">
+                <label className="text-primary text-[10px] font-black tracking-widest uppercase ml-1">PILOT 01</label>
+                <input 
+                  type="text" 
+                  value={player1Name}
+                  onChange={(e) => setPlayer1Name(e.target.value.toUpperCase())}
+                  placeholder="ENTER NAME" 
+                  autoFocus
+                  className="w-full bg-black/50 border-2 border-primary/30 rounded-xl px-4 py-3 text-white font-headline font-bold tracking-widest focus:outline-none focus:border-primary transition-all placeholder:text-white/20"
+                />
+              </div>
+
+              {numPlayers === 2 && (
+                <div className="flex flex-col gap-2">
+                  <label className="text-secondary text-[10px] font-black tracking-widest uppercase ml-1">PILOT 02</label>
+                  <input 
+                    type="text" 
+                    value={player2Name}
+                    onChange={(e) => setPlayer2Name(e.target.value.toUpperCase())}
+                    placeholder="ENTER NAME" 
+                    className="w-full bg-black/50 border-2 border-secondary/30 rounded-xl px-4 py-3 text-white font-headline font-bold tracking-widest focus:outline-none focus:border-secondary transition-all placeholder:text-white/20"
+                  />
+                </div>
+              )}
+            </div>
+
+            <button 
+              onClick={confirmNamesAndStart}
+              disabled={(numPlayers === 1 && !player1Name.trim()) || (numPlayers === 2 && (!player1Name.trim() || !player2Name.trim()))}
+              className="group relative w-full h-14 rounded-xl overflow-hidden transition-all active:scale-95 shadow-[0_10px_30px_rgba(0,185,209,0.4)] disabled:opacity-50 disabled:pointer-events-none"
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-primary to-secondary group-hover:from-secondary group-hover:to-primary transition-all duration-300"></div>
+              <span className="relative flex items-center justify-center gap-3 text-white font-headline font-black tracking-[0.2em] text-base uppercase">
+                CONFIRM & LAUNCH
+                <Rocket className="w-5 h-5 group-hover:-translate-y-1 transition-transform" />
+              </span>
+            </button>
+            
+            <button 
+              onClick={() => setShowNameEntry(false)}
+              className="text-white/40 hover:text-white text-[10px] font-bold tracking-widest uppercase transition-colors"
+            >
+              CANCEL
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Game Entry Modal */}
       {gameState === 'menu' && (
