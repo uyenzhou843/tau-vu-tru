@@ -82,14 +82,24 @@ const soundManager = new SoundManager();
 const TRASH_EMOJIS = ['🔩', '💥', '☄️'];
 const SATELLITE_EMOJIS = ['🛰️', '📡'];
 const BOMB_EMOJIS = ['💣'];
+const TREASURE_EMOJIS = ['🎁'];
 const FALL_SPEED = 2;
 const SPAWN_RATE = 1200; // ms
 const PINCH_THRESHOLD = 40; // px
 const GRAB_RADIUS = 25; // px
 
+const SPACE_QUIZ = [
+  { q: "What is the red planet?", a: "mars" },
+  { q: "What is the largest planet?", a: "jupiter" },
+  { q: "What star is at the center of our solar system?", a: "sun" },
+  { q: "How many planets are in our solar system?", a: "8" },
+  { q: "Which planet has rings?", a: "saturn" },
+  { q: "What is the natural satellite of Earth?", a: "moon" },
+];
+
 interface GameObject {
   id: number;
-  type: 'trash' | 'satellite' | 'bomb';
+  type: 'trash' | 'satellite' | 'bomb' | 'treasure';
   emoji: string;
   x: number;
   y: number;
@@ -104,12 +114,14 @@ interface GameObject {
 function GameCanvas({
   onScoreChange,
   onComboChange,
+  onTreasureScored,
   reactorRef,
   gameState,
   numPlayers,
 }: {
   onScoreChange: (playerIndex: number, delta: number) => void;
   onComboChange: (playerIndex: number, combo: number, isFever: boolean) => void;
+  onTreasureScored: (playerIndex: number) => void;
   reactorRef: React.RefObject<HTMLDivElement | null>;
   gameState: 'menu' | 'playing' | 'gameover';
   numPlayers: number;
@@ -125,7 +137,6 @@ function GameCanvas({
   const lastLandmarksRef = useRef<any[]>([]);
 
   const combosRef = useRef<[number, number]>([0, 0]);
-  const consecutiveTrashRef = useRef<[number, number]>([0, 0]);
   const comboVisualsRef = useRef<{ x: number, y: number, time: number, playerIndex: number, isBig: boolean, level: number }[]>([]);
   const feverEndTimesRef = useRef<[number, number]>([0, 0]);
   const feverModesRef = useRef<[boolean, boolean]>([false, false]);
@@ -217,10 +228,13 @@ function GameCanvas({
       // Spawn objects
       if (gameState === 'playing' && time - lastSpawnTimeRef.current > SPAWN_RATE) {
         const rand = Math.random();
-        let type: 'trash' | 'satellite' | 'bomb' = 'trash';
+        let type: 'trash' | 'satellite' | 'bomb' | 'treasure' = 'trash';
         let emojiList = TRASH_EMOJIS;
         
-        if (rand > 0.85) {
+        if (rand > 0.95) {
+          type = 'treasure';
+          emojiList = TREASURE_EMOJIS;
+        } else if (rand > 0.85) {
           type = 'bomb';
           emojiList = BOMB_EMOJIS;
         } else if (rand > 0.7) {
@@ -359,37 +373,22 @@ function GameCanvas({
         if (obj.type === 'trash') {
           soundManager.playScoreSound();
           
-          consecutiveTrashRef.current[playerIndex]++;
-          const comboLevel = Math.floor(consecutiveTrashRef.current[playerIndex] / 3);
           let scoreDelta = 10;
-          
-          if (comboLevel >= 1) {
-            scoreDelta *= 2;
-          }
-
-          // Trigger visual
-          if (consecutiveTrashRef.current[playerIndex] > 0 && consecutiveTrashRef.current[playerIndex] % 3 === 0) {
-            comboVisualsRef.current.push({
-              x: obj.x,
-              y: obj.y,
-              time: Date.now(),
-              playerIndex,
-              isBig: true,
-              level: comboLevel
-            });
-          } else if (comboLevel >= 1) {
-            comboVisualsRef.current.push({
-              x: obj.x,
-              y: obj.y,
-              time: Date.now(),
-              playerIndex,
-              isBig: false,
-              level: comboLevel
-            });
-          }
-
           onScoreChange(playerIndex, scoreDelta);
           combosRef.current[playerIndex] = Math.min(combosRef.current[playerIndex] + 1, MAX_COMBO);
+          
+          // Floating combo text
+          if (combosRef.current[playerIndex] % 5 === 0 || combosRef.current[playerIndex] === MAX_COMBO) {
+            comboVisualsRef.current.push({
+              x: obj.x,
+              y: obj.y,
+              time: Date.now(),
+              playerIndex,
+              isBig: combosRef.current[playerIndex] === MAX_COMBO,
+              level: combosRef.current[playerIndex]
+            });
+          }
+
           if (combosRef.current[playerIndex] >= MAX_COMBO && !feverModesRef.current[playerIndex]) {
             feverEndTimesRef.current[playerIndex] = time + FEVER_DURATION;
             feverModesRef.current[playerIndex] = true;
@@ -397,17 +396,18 @@ function GameCanvas({
           } else {
             onComboChange(playerIndex, combosRef.current[playerIndex], feverModesRef.current[playerIndex]);
           }
+        } else if (obj.type === 'treasure') {
+          soundManager.playScoreSound();
+          onTreasureScored(playerIndex);
         } else if (obj.type === 'bomb') {
           soundManager.playBombSound();
           onScoreChange(playerIndex, -20);
           combosRef.current[playerIndex] = 0;
-          consecutiveTrashRef.current[playerIndex] = 0;
           onComboChange(playerIndex, 0, false);
         } else {
           soundManager.playBombSound();
           onScoreChange(playerIndex, -10);
           combosRef.current[playerIndex] = 0;
-          consecutiveTrashRef.current[playerIndex] = 0;
           onComboChange(playerIndex, 0, false);
         }
       };
@@ -494,9 +494,11 @@ function GameCanvas({
           }
 
           for (const hand of currentHands) {
+            const isFever = feverModesRef.current[hand.playerIndex];
             if (hand.isPinching && !playersHolding.has(hand.playerIndex)) {
               const dist = Math.hypot(obj.x - hand.x, obj.y - hand.y);
-              if (dist < GRAB_RADIUS) {
+              const currentGrabRadius = isFever ? 200 : GRAB_RADIUS;
+              if (dist < currentGrabRadius) {
                 obj.isGrabbed = true;
                 obj.grabbedByPlayerIndex = hand.playerIndex;
                 obj.isRegretting = false;
@@ -511,9 +513,15 @@ function GameCanvas({
         // Remove if off screen
         if (obj.y > canvas.height + 50 || obj.x < -50 || obj.x > canvas.width + 50) {
           if (obj.type === 'trash' && !obj.isGrabbed && obj.vacuumedByPlayerIndex === null) {
-            // Reset combo if trash falls
-            consecutiveTrashRef.current[0] = 0;
-            consecutiveTrashRef.current[1] = 0;
+            // Reset combo if trash falls past the reactor
+            if (obj.y > reactorBounds.bottom) {
+              if (combosRef.current[0] > 0 || combosRef.current[1] > 0) {
+                combosRef.current[0] = 0;
+                combosRef.current[1] = 0;
+                onComboChange(0, 0, false);
+                onComboChange(1, 0, false);
+              }
+            }
           }
           objectsRef.current.splice(i, 1);
           continue;
@@ -554,13 +562,13 @@ function GameCanvas({
         ctx.textAlign = 'center';
         
         if (visual.isBig) {
-          ctx.font = 'black 60px Orbitron, sans-serif';
-          ctx.fillText(`COMBO ${visual.level}!!`, 0, 0);
+          ctx.font = '900 70px Orbitron, sans-serif';
+          ctx.fillText(`COMBO ${visual.level}`, 0, 0);
           ctx.font = 'bold 25px Orbitron, sans-serif';
-          ctx.fillText('SCORE x2 ACTIVE', 0, 40);
+          ctx.fillText('FEVER MODE ACTIVATED', 0, 40);
         } else {
-          ctx.font = 'bold 35px Orbitron, sans-serif';
-          ctx.fillText('x2!', 0, 0);
+          ctx.font = '900 45px Orbitron, sans-serif';
+          ctx.fillText(`COMBO ${visual.level}`, 0, 0);
         }
         
         ctx.restore();
@@ -593,6 +601,13 @@ export default function App() {
   const [scores, setScores] = useState<[number, number]>([0, 0]);
   const [combos, setCombos] = useState<[number, number]>([0, 0]);
   const [feverModes, setFeverModes] = useState<[boolean, boolean]>([false, false]);
+  const [activeQuiz, setActiveQuiz] = useState<{
+    question: string;
+    answer: string;
+    playerIndex: number;
+    timeLeft: number;
+  } | null>(null);
+  const [quizInput, setQuizInput] = useState('');
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [gameState, setGameState] = useState<'menu' | 'playing' | 'gameover'>('menu');
   const [gameDuration, setGameDuration] = useState<number>(5);
@@ -642,6 +657,23 @@ export default function App() {
     }
   }, [gameState, player1Name, player2Name]);
 
+  // Quiz timer effect
+  useEffect(() => {
+    if (activeQuiz && gameState === 'playing') {
+      const timer = setInterval(() => {
+        setActiveQuiz(prev => {
+          if (!prev) return null;
+          if (prev.timeLeft <= 1) {
+            clearInterval(timer);
+            return null;
+          }
+          return { ...prev, timeLeft: prev.timeLeft - 1 };
+        });
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [activeQuiz, gameState]);
+
   const startGame = () => {
     setShowNameEntry(true);
   };
@@ -654,6 +686,7 @@ export default function App() {
     setScores([0, 0]);
     setCombos([0, 0]);
     setFeverModes([false, false]);
+    setActiveQuiz(null);
     setTimeRemaining(gameDuration * 60);
     setGameState('playing');
     setShowNameEntry(false);
@@ -686,9 +719,56 @@ export default function App() {
     });
   }, []);
 
+  const handleTreasureScored = useCallback((playerIndex: number) => {
+    const randomQuiz = SPACE_QUIZ[Math.floor(Math.random() * SPACE_QUIZ.length)];
+    setActiveQuiz({
+      question: randomQuiz.q,
+      answer: randomQuiz.a,
+      playerIndex,
+      timeLeft: 30,
+    });
+    setQuizInput('');
+  }, []);
+
+  const submitQuiz = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeQuiz) return;
+
+    if (quizInput.toLowerCase().trim() === activeQuiz.answer.toLowerCase()) {
+      setScores(prev => {
+        const next = [...prev] as [number, number];
+        next[activeQuiz.playerIndex] *= 2;
+        return next;
+      });
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 }
+      });
+    }
+    setActiveQuiz(null);
+  };
+
   return (
     <div className="bg-background text-on-surface font-body overflow-hidden select-none min-h-screen">
-      <GameCanvas onScoreChange={handleScoreChange} onComboChange={handleComboChange} reactorRef={reactorRef} gameState={gameState} numPlayers={numPlayers} />
+      <GameCanvas 
+        onScoreChange={handleScoreChange} 
+        onComboChange={handleComboChange} 
+        onTreasureScored={handleTreasureScored}
+        reactorRef={reactorRef} 
+        gameState={gameState} 
+        numPlayers={numPlayers} 
+      />
+
+      {/* Fever Mode Overlay Message */}
+      {(feverModes[0] || feverModes[1]) && (
+        <div className="fixed inset-0 z-40 pointer-events-none flex flex-col items-center justify-center">
+          <div className="bg-black/40 backdrop-blur-sm px-10 py-6 border-y-2 border-primary/50 w-full flex flex-col items-center animate-pulse">
+            <h2 className="text-primary font-headline font-black text-4xl tracking-[0.2em] glow-primary mb-2">FEVER MODE ACTIVE</h2>
+            <p className="text-white font-headline font-bold text-xl tracking-widest animate-bounce">WAVE YOUR HANDS EVERYWHERE!</p>
+          </div>
+        </div>
+      )}
 
       {/* AR Background Layer */}
       <div className="fixed inset-0 z-0 bg-black overflow-hidden">
@@ -698,6 +778,7 @@ export default function App() {
             alt="Deep space starfield"
             className="w-full h-full object-cover scale-105"
             src="https://images.unsplash.com/photo-1506318137071-a8e063b4bec0?q=80&w=2070&auto=format&fit=crop"
+            referrerPolicy="no-referrer"
           />
         </div>
         {/* Darkened Overlay */}
@@ -706,6 +787,44 @@ export default function App() {
         <div className="absolute top-0 right-0 w-[1000px] h-[1000px] bg-tertiary/15 blur-[250px] -translate-y-1/3 translate-x-1/3 rounded-full"></div>
         <div className="absolute bottom-0 left-0 w-[800px] h-[800px] bg-secondary/15 blur-[200px] translate-y-1/3 -translate-x-1/4 rounded-full"></div>
       </div>
+
+      {/* Quiz Overlay */}
+      {activeQuiz && gameState === 'playing' && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-50 w-full max-w-lg px-4 pointer-events-auto">
+          <div className={`glass-panel p-6 rounded-2xl border-2 ${activeQuiz.playerIndex === 0 ? 'border-primary' : 'border-secondary'} shadow-[0_0_30px_rgba(0,0,0,0.5)]`}>
+            <div className="flex justify-between items-center mb-4">
+              <span className={`font-headline font-bold text-xs tracking-widest ${activeQuiz.playerIndex === 0 ? 'text-primary' : 'text-secondary'}`}>
+                {activeQuiz.playerIndex === 0 ? player1Name : player2Name}'S SPACE QUIZ
+              </span>
+              <span className="font-mono text-xl font-bold text-white animate-pulse">
+                {activeQuiz.timeLeft}s
+              </span>
+            </div>
+            <h3 className="text-white font-headline text-lg mb-4 leading-tight">
+              {activeQuiz.question}
+            </h3>
+            <form onSubmit={submitQuiz} className="flex gap-2">
+              <input
+                autoFocus
+                type="text"
+                value={quizInput}
+                onChange={(e) => setQuizInput(e.target.value)}
+                placeholder="Type your answer..."
+                className="flex-grow bg-black/50 border border-white/20 rounded-xl px-4 py-2 text-white font-mono focus:outline-none focus:border-primary transition-all"
+              />
+              <button
+                type="submit"
+                className={`px-6 py-2 rounded-xl font-headline font-bold text-white transition-all ${activeQuiz.playerIndex === 0 ? 'bg-primary hover:bg-primary/80' : 'bg-secondary hover:bg-secondary/80'}`}
+              >
+                SUBMIT
+              </button>
+            </form>
+            <p className="text-white/40 text-[10px] mt-3 uppercase tracking-widest text-center">
+              Correct answer doubles your current score!
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="fixed inset-0 z-15 hologram-overlay opacity-40 pointer-events-none"></div>
       <div className="fixed inset-0 z-15 grain pointer-events-none"></div>
@@ -778,8 +897,10 @@ export default function App() {
               </div>
               <div className="flex flex-col gap-2">
                 <div className="flex justify-between items-end">
-                  <span className="font-headline font-bold text-white tracking-widest text-xs">FEVER MODE</span>
-                  <span className={`font-mono font-bold text-xs ${feverModes[0] ? 'text-primary animate-pulse' : 'text-white/70'}`}>
+                  <span className="font-headline font-bold text-white tracking-widest text-xs uppercase">
+                    {numPlayers === 2 ? 'Fever Mode' : 'Combo Meter'}
+                  </span>
+                  <span className={`font-headline font-black text-sm ${feverModes[0] ? 'text-primary animate-pulse' : 'text-white/70'}`}>
                     {feverModes[0] ? 'MAX' : `${combos[0]}/20`}
                   </span>
                 </div>
@@ -811,8 +932,8 @@ export default function App() {
                 </div>
                 <div className="flex flex-col gap-2 w-full">
                   <div className="flex justify-between items-end">
-                    <span className="font-headline font-bold text-white tracking-widest text-xs">COMBO</span>
-                    <span className={`font-mono font-bold text-xs ${feverModes[1] ? 'text-secondary animate-pulse' : 'text-white/70'}`}>
+                    <span className="font-headline font-bold text-white tracking-widest text-xs uppercase">Fever Mode</span>
+                    <span className={`font-headline font-black text-sm ${feverModes[1] ? 'text-secondary animate-pulse' : 'text-white/70'}`}>
                       {feverModes[1] ? 'MAX' : `${combos[1]}/20`}
                     </span>
                   </div>
