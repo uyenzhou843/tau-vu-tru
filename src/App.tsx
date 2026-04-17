@@ -85,8 +85,8 @@ const BOMB_EMOJIS = ['💣'];
 const TREASURE_EMOJIS = ['🎁'];
 const FALL_SPEED = 2;
 const SPAWN_RATE = 1200; // ms
-const PINCH_THRESHOLD = 40; // px
-const GRAB_RADIUS = 25; // px
+const PINCH_THRESHOLD = 60; // px
+const GRAB_RADIUS = 60; // px
 
 const SPACE_QUIZ = [
   // Easy Questions (10)
@@ -596,7 +596,7 @@ function GameCanvas({
         }
 
         // Draw Object
-        ctx.font = '50px Arial';
+        ctx.font = '60px Arial';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(obj.emoji, obj.x, obj.y);
@@ -699,7 +699,6 @@ export default function App() {
     playerIndex: number;
     id: number;
   } | null>(null);
-  const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [gameState, setGameState] = useState<'menu' | 'countdown' | 'playing' | 'gameover'>('menu');
   const [countdownValue, setCountdownValue] = useState<number>(3);
   const [gameDuration, setGameDuration] = useState<number>(5);
@@ -708,13 +707,6 @@ export default function App() {
   const [player1Name, setPlayer1Name] = useState('');
   const [player2Name, setPlayer2Name] = useState('');
   const [showNameEntry, setShowNameEntry] = useState(false);
-  const [leaderboard, setLeaderboard] = useState<{name: string, score: number}[]>(() => {
-    try {
-      const saved = localStorage.getItem('space_cleaner_leaderboard');
-      if (saved) return JSON.parse(saved);
-    } catch(e) {}
-    return [];
-  });
   const [language, setLanguage] = useState<'en' | 'vi'>('en');
   const reactorRef = useRef<HTMLDivElement>(null);
 
@@ -755,21 +747,7 @@ export default function App() {
       }, 1000);
       return () => clearInterval(timer);
     } else if (gameState === 'gameover') {
-      // Add to leaderboard when game is over
-      setLeaderboard(prev => {
-        let newLb = [...prev];
-        if (scoresRef.current[0] > 0) {
-          newLb.push({ name: player1Name.trim() || (language === 'en' ? 'PLAYER 1' : 'NGƯỜI CHƠI 1'), score: scoresRef.current[0] });
-        }
-        if (scoresRef.current[1] > 0) {
-          newLb.push({ name: player2Name.trim() || (language === 'en' ? 'PLAYER 2' : 'NGƯỜI CHƠI 2'), score: scoresRef.current[1] });
-        }
-        const finalLb = newLb.sort((a, b) => b.score - a.score).slice(0, 100);
-        localStorage.setItem('space_cleaner_leaderboard', JSON.stringify(finalLb));
-        return finalLb;
-      });
-      // Automatically show leaderboard after a short delay
-      setTimeout(() => setShowLeaderboard(true), 3500);
+      // Confetti and sound already triggered when timeRemaining reaches 0
     }
   }, [gameState, player1Name, player2Name]);
 
@@ -941,16 +919,16 @@ export default function App() {
           <img
             alt="Deep space galaxy"
             className="w-full h-full object-cover scale-105"
-            src="https://t3.ftcdn.net/jpg/01/03/88/07/360_F_103880786_1m88Eoz7V2fTYL4bM52oMReh5iLwG8f.jpg"
+            src="https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=2000&auto=format&fit=crop"
             onError={(e) => {
               // Fallback to a very similar Unsplash image if Adobe Stock blocks hotlinking
-              e.currentTarget.src = "https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=2000&auto=format&fit=crop";
+              e.currentTarget.src = "https://images.unsplash.com/photo-1534447677768-be436bb09401?q=80&w=2000&auto=format&fit=crop";
             }}
             referrerPolicy="no-referrer"
           />
         </div>
         {/* Darkened Overlay */}
-        <div className="absolute inset-0 z-6 bg-black/85 pointer-events-none"></div>
+        <div className="absolute inset-0 z-6 bg-black/75 pointer-events-none"></div>
         {/* Atmospheric Overlays */}
         <div className="absolute top-0 right-0 w-[1000px] h-[1000px] bg-tertiary/15 blur-[250px] -translate-y-1/3 translate-x-1/3 rounded-full"></div>
         <div className="absolute bottom-0 left-0 w-[800px] h-[800px] bg-secondary/15 blur-[200px] translate-y-1/3 -translate-x-1/4 rounded-full"></div>
@@ -1135,13 +1113,13 @@ export default function App() {
           {/* MAG-BOTTLE REACTOR */}
           <div
             ref={reactorRef}
-            className="relative w-96 h-96 flex items-center justify-center pointer-events-auto"
+            className="relative w-[450px] h-[450px] flex items-center justify-center pointer-events-auto"
           >
             {(feverModes[0] || feverModes[1]) ? (
               <div className="absolute inset-0 bg-black rounded-full shadow-[0_0_150px_#FF00FF] animate-pulse flex items-center justify-center overflow-hidden">
                 <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(255,0,255,0.8)_0%,rgba(0,0,0,1)_70%)] animate-spin" style={{ animationDuration: '3s' }}></div>
                 <div className="w-full h-full rounded-full border-8 border-[#00FFFF] border-dashed animate-spin" style={{ animationDuration: '2s', animationDirection: 'reverse' }}></div>
-                <div className="absolute w-20 h-20 bg-black rounded-full shadow-[0_0_50px_#000]"></div>
+                <div className="absolute w-28 h-28 bg-black rounded-full shadow-[0_0_50px_#000]"></div>
               </div>
             ) : (
               <>
@@ -1158,7 +1136,7 @@ export default function App() {
                   style={{ animationDuration: '18s', animationDirection: 'reverse' }}
                 ></div>
                 {/* Holographic Core (Vibrant Orange) */}
-                <div className="relative w-56 h-56 flex items-center justify-center">
+                <div className="relative w-64 h-64 flex items-center justify-center">
                   <div className="absolute inset-0 bg-orange-600/30 blur-[60px] rounded-full animate-pulse"></div>
                   <div
                     className="absolute inset-0 bg-orange-500/20 blur-[70px] rounded-full animate-pulse"
@@ -1166,7 +1144,7 @@ export default function App() {
                   ></div>
                   <div className="absolute inset-0 bg-gradient-to-br from-[#FF4500] via-[#FF8C00] to-red-600 plasma-pulse-vibrant rounded-2xl"></div>
                   <div className="absolute inset-3 border-2 border-white/20 rotate-45 rounded-xl mix-blend-overlay"></div>
-                  <div className="w-20 h-20 bg-white/60 rounded-full blur-2xl animate-pulse"></div>
+                  <div className="w-28 h-28 bg-white/60 rounded-full blur-2xl animate-pulse"></div>
                   <div
                     className="absolute -inset-10 border-2 border-secondary/40 rounded-full animate-spin"
                     style={{ animationDuration: '5s', borderStyle: 'dashed' }}
@@ -1353,7 +1331,7 @@ export default function App() {
                   {scores[0] === scores[1] && <p className="text-white font-bold mt-4 text-3xl tracking-widest">{language === 'en' ? "IT'S A TIE!" : "HÒA NHAU!"}</p>}
                 </>
               ) : (
-                <p className="text-white font-bold mt-4 text-3xl tracking-widest">{language === 'en' ? 'WELL DONE!' : 'LÀM TỐT LẮM!'}</p>
+                <p className="text-primary font-bold mt-4 text-3xl tracking-widest glow-primary">{language === 'en' ? 'CONGRATULATIONS' : 'CHÚC MỪNG'} {player1Name || (language === 'en' ? 'PLAYER' : 'NGƯỜI CHƠI')}!</p>
               )}
             </div>
             
@@ -1382,11 +1360,10 @@ export default function App() {
           </span>
         </div>
         <div 
-          className="flex flex-col items-center justify-center text-white/70 p-2 active:scale-90 transition-all pointer-events-auto"
-          onClick={() => setShowLeaderboard(true)}
+          className="flex flex-col items-center justify-center text-white/50 p-2 cursor-not-allowed transition-all"
         >
-          <Trophy className="w-5 h-5" />
-          <span className="font-headline text-[8px] font-bold tracking-widest mt-0.5 uppercase">
+          <Trophy className="w-5 h-5 opacity-50" />
+          <span className="font-headline text-[8px] font-bold tracking-widest mt-0.5 uppercase opacity-50">
             {language === 'en' ? 'LEADERS' : 'XẾP HẠNG'}
           </span>
         </div>
@@ -1401,82 +1378,6 @@ export default function App() {
           </span>
         </div>
       </footer>
-
-      {/* Leaderboard Modal */}
-      {showLeaderboard && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setShowLeaderboard(false)}></div>
-          <div className="relative glass-panel w-full max-w-2xl max-h-[80vh] rounded-3xl border border-white/20 shadow-[0_0_50px_rgba(0,0,0,0.5)] flex flex-col overflow-hidden pointer-events-auto">
-            <div className="p-8 border-b border-white/10 flex justify-between items-center bg-white/5">
-              <div>
-                <h2 className="text-3xl font-headline font-black text-white tracking-tighter glow-primary">
-                  {language === 'en' ? 'GALACTIC HALL OF FAME' : 'BẢNG VÀNG VŨ TRỤ'}
-                </h2>
-                <p className="text-white/50 text-xs tracking-widest uppercase mt-1">
-                  {language === 'en' ? 'Top 100 Pilots in the Sector' : '100 Người Dọn Rác Xuất Sắc Nhất'}
-                </p>
-              </div>
-              <button 
-                onClick={() => setShowLeaderboard(false)}
-                className="p-2 hover:bg-white/10 rounded-full transition-colors"
-              >
-                <X className="w-6 h-6 text-white/50" />
-              </button>
-            </div>
-            
-            <div className="flex-grow overflow-y-auto p-4 custom-scrollbar">
-              <div className="space-y-2">
-                {leaderboard.length > 0 ? (
-                  leaderboard.map((entry, i) => {
-                    const isSpotlight = i < 3;
-                    return (
-                      <div 
-                        key={i} 
-                        className={`flex items-center justify-between p-4 rounded-xl transition-all ${
-                          isSpotlight 
-                            ? i === 0 
-                              ? 'bg-yellow-500/20 border border-yellow-500/40 shadow-[0_0_15px_rgba(255,255,0,0.3)] scale-[1.02]' 
-                              : i === 1 
-                                ? 'bg-slate-300/20 border border-slate-300/40 shadow-[0_0_15px_rgba(203,213,225,0.3)] scale-[1.01]'
-                                : 'bg-amber-700/20 border border-amber-700/40 shadow-[0_0_15px_rgba(180,83,9,0.3)]'
-                            : 'bg-white/5 border border-white/5 hover:bg-white/10'
-                        }`}
-                      >
-                        <div className="flex items-center gap-6">
-                          <span className={`font-mono font-black text-2xl w-8 text-center ${
-                            i === 0 ? 'text-yellow-400' : i === 1 ? 'text-slate-300' : i === 2 ? 'text-amber-600' : 'text-white/30'
-                          }`}>
-                            {i + 1}
-                          </span>
-                          <div className="flex flex-col">
-                            <span className={`font-headline font-bold tracking-widest ${isSpotlight ? 'text-white text-lg' : 'text-white/80'}`}>
-                              {entry.name}
-                            </span>
-                            {isSpotlight && (
-                              <span className="text-[10px] text-white/40 uppercase tracking-widest">
-                                {i === 0 ? (language === 'en' ? 'Supreme Commander' : 'Chỉ Huy Tối Cao') : i === 1 ? (language === 'en' ? 'Elite Pilot' : 'Tay Lái Ưu Tú') : (language === 'en' ? 'Ace Navigator' : 'Hoa Tiêu Xuất Chúng')}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <span className={`font-mono font-black text-xl ${isSpotlight ? 'text-white' : 'text-white/60'}`}>
-                          {entry.score.toLocaleString()}
-                        </span>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="text-center py-20">
-                    <p className="text-white/30 font-headline tracking-widest uppercase">
-                      {language === 'en' ? 'No mission data recorded yet' : 'Chưa có thông tin kỷ lục nào'}
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
