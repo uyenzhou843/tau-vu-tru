@@ -89,12 +89,29 @@ const PINCH_THRESHOLD = 40; // px
 const GRAB_RADIUS = 25; // px
 
 const SPACE_QUIZ = [
-  { q: "What is the red planet?", a: "mars" },
-  { q: "What is the largest planet?", a: "jupiter" },
-  { q: "What star is at the center of our solar system?", a: "sun" },
-  { q: "How many planets are in our solar system?", a: "8" },
-  { q: "Which planet has rings?", a: "saturn" },
-  { q: "What is the natural satellite of Earth?", a: "moon" },
+  // Easy Questions (10)
+  { q: "What is the red planet?", a: "mars", difficulty: "easy" },
+  { q: "What star is at the center of our solar system?", a: "sun", difficulty: "easy" },
+  { q: "How many moons does Earth have?", a: "1", difficulty: "easy" },
+  { q: "Is the Sun a planet or a star?", a: "star", difficulty: "easy" },
+  { q: "What do we call a shooting star?", a: "meteor", difficulty: "easy" },
+  { q: "What is the name of the planet we live on?", a: "earth" , difficulty: "easy" },
+  { q: "What do you call a person who travels to space?", a: "astronaut", difficulty: "easy" },
+  { q: "Which planet is the smallest in our solar system?", a: "mercury", difficulty: "easy" },
+  { q: "What is the brightest object in the night sky?", a: "moon", difficulty: "easy" },
+  { q: "What is the shape of the Earth?", a: "sphere", difficulty: "easy" },
+  
+  // Medium Questions (10)
+  { q: "What is the largest planet in our solar system?", a: "jupiter", difficulty: "medium" },
+  { q: "Which planet is known as the Blue Planet?", a: "earth", difficulty: "medium" },
+  { q: "Which planet is famous for its Great Red Spot?", a: "jupiter", difficulty: "medium" },
+  { q: "Which planet is the furthest from the Sun?", a: "neptune", difficulty: "medium" },
+  { q: "What is the name of our galaxy?", a: "milky way", difficulty: "medium" },
+  { q: "What is a group of stars that forms a pattern?", a: "constellation", difficulty: "medium" },
+  { q: "What is the name of the large telescope in space?", a: "hubble", difficulty: "medium" },
+  { q: "Who was the first person to walk on the moon?", a: "neil armstrong", difficulty: "medium" },
+  { q: "What is the name of the first artificial satellite?", a: "sputnik", difficulty: "medium" },
+  { q: "Which planet is the coldest in our solar system?", a: "uranus", difficulty: "medium" },
 ];
 
 interface GameObject {
@@ -123,13 +140,14 @@ function GameCanvas({
   onComboChange: (playerIndex: number, combo: number, isFever: boolean) => void;
   onTreasureScored: (playerIndex: number) => void;
   reactorRef: React.RefObject<HTMLDivElement | null>;
-  gameState: 'menu' | 'playing' | 'gameover';
+  gameState: 'menu' | 'countdown' | 'playing' | 'gameover';
   numPlayers: number;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [handLandmarker, setHandLandmarker] = useState<HandLandmarker | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isCameraStarting, setIsCameraStarting] = useState(false);
   const objectsRef = useRef<GameObject[]>([]);
   const lastSpawnTimeRef = useRef<number>(0);
   const requestRef = useRef<number>(0);
@@ -146,6 +164,7 @@ function GameCanvas({
   // Initialize MediaPipe
   useEffect(() => {
     let active = true;
+    let localLandmarker: HandLandmarker | null = null;
     const initMediaPipe = async () => {
       try {
         const vision = await FilesetResolver.forVisionTasks(
@@ -161,7 +180,11 @@ function GameCanvas({
           runningMode: 'VIDEO',
           numHands: 2,
         });
-        if (!active) return;
+        if (!active) {
+          landmarker.close();
+          return;
+        }
+        localLandmarker = landmarker;
         setHandLandmarker(landmarker);
       } catch (e) {
         console.error("Failed to initialize MediaPipe:", e);
@@ -170,17 +193,31 @@ function GameCanvas({
     initMediaPipe();
     return () => {
       active = false;
-      handLandmarker?.close();
+      if (localLandmarker) {
+        localLandmarker.close();
+      }
     };
   }, []);
 
-  // Start Webcam
   useEffect(() => {
+    if (gameState === 'playing') {
+      lastSpawnTimeRef.current = performance.now() - SPAWN_RATE;
+    }
+  }, [gameState]);
+
+  // Start Webcam
+  const startCamera = useCallback(() => {
     if (!videoRef.current) return;
+    setIsCameraStarting(true);
+    setCameraError(null);
     let currentStream: MediaStream | null = null;
     
-    navigator.mediaDevices
-      .getUserMedia({ video: { width: 640, height: 480, frameRate: { ideal: 60, min: 30 } } })
+    const startWithConstraints = (constraints: MediaStreamConstraints) => {
+      return navigator.mediaDevices.getUserMedia(constraints);
+    };
+    
+    startWithConstraints({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } })
+      .catch(() => startWithConstraints({ video: true }))
       .then((stream) => {
         currentStream = stream;
         if (videoRef.current) {
@@ -191,19 +228,25 @@ function GameCanvas({
             }
           });
         }
-        setCameraError(null);
+        setIsCameraStarting(false);
       })
       .catch((err) => {
         console.error('Error accessing webcam:', err);
         setCameraError(err.message || 'Permission denied');
+        setIsCameraStarting(false);
       });
-      
+  }, []);
+
+  useEffect(() => {
+    startCamera();
+    
     return () => {
-      if (currentStream) {
-        currentStream.getTracks().forEach(track => track.stop());
+      if (videoRef.current && videoRef.current.srcObject) {
+        const stream = videoRef.current.srcObject as MediaStream;
+        stream.getTracks().forEach(track => track.stop());
       }
     };
-  }, []);
+  }, [startCamera]);
 
   // Game Loop
   useEffect(() => {
@@ -231,7 +274,7 @@ function GameCanvas({
         let type: 'trash' | 'satellite' | 'bomb' | 'treasure' = 'trash';
         let emojiList = TRASH_EMOJIS;
         
-        if (rand > 0.95) {
+        if (rand > 0.95 && numPlayers === 1) {
           type = 'treasure';
           emojiList = TREASURE_EMOJIS;
         } else if (rand > 0.85) {
@@ -291,18 +334,42 @@ function GameCanvas({
         }
 
         lastLandmarksRef.current.forEach((landmarks, index) => {
-          // Draw hand
-          const colors = ['rgba(0, 255, 255, 0.5)', 'rgba(255, 0, 255, 0.5)'];
-          const strokeColors = ['rgba(0, 255, 255, 0.8)', 'rgba(255, 0, 255, 0.8)'];
-          ctx.fillStyle = colors[index % 2];
-          ctx.strokeStyle = strokeColors[index % 2];
-          ctx.lineWidth = 2;
+          // Map landmarks to screen accurately, matching the draw object above
+          const vRatio = videoRef.current!.videoWidth / videoRef.current!.videoHeight;
+          const cRatio = canvas.width / canvas.height;
+          let viewWidth = canvas.width;
+          let viewHeight = canvas.height;
+          let viewOffsetX = 0;
+          let viewOffsetY = 0;
 
-          // Map landmarks to screen
+          if (cRatio > vRatio) {
+            viewHeight = canvas.width / vRatio;
+            viewOffsetY = (canvas.height - viewHeight) / 2;
+          } else {
+            viewWidth = canvas.height * vRatio;
+            viewOffsetX = (canvas.width - viewWidth) / 2;
+          }
+
           const mappedLandmarks = landmarks.map((l: any) => ({
-            x: (1 - l.x) * canvas.width, // Mirror
-            y: l.y * canvas.height,
+            x: (canvas.width + viewWidth) / 2 - l.x * viewWidth, // Mirrored perfectly centered
+            y: l.y * viewHeight + viewOffsetY,
           }));
+
+          if (mappedLandmarks.length < 1) return;
+
+          // Determine player index based on x position (static mapping)
+          const centerX = mappedLandmarks.reduce((acc: number, l: any) => acc + l.x, 0) / mappedLandmarks.length;
+          // In 2 player mode, left half is P1, right half is P2.
+          // In 1 player mode, any hand is P1.
+          const playerIdx = numPlayers === 1 ? 0 : (centerX < canvas.width / 2 ? 0 : 1);
+
+          // Draw hand with fixed colors: P1 = Blue, P2 = Red
+          const colors = ['rgba(59, 130, 246, 0.5)', 'rgba(239, 68, 68, 0.5)']; 
+          const strokeColors = ['rgba(59, 130, 246, 0.8)', 'rgba(239, 68, 68, 0.8)'];
+          
+          ctx.fillStyle = colors[playerIdx];
+          ctx.strokeStyle = strokeColors[playerIdx];
+          ctx.lineWidth = 2;
 
           // Draw connections (simplified)
           ctx.beginPath();
@@ -325,13 +392,13 @@ function GameCanvas({
               y: (thumb.y + indexFinger.y) / 2,
             };
 
-            const playerIndex = numPlayers === 1 ? 0 : (pinchCenter.x < canvas.width / 2 ? 0 : 1);
+            const playerIndex = playerIdx; // Use the already determined playerIdx
 
             // Draw pinch indicator
             if (isPinching) {
               ctx.beginPath();
               ctx.arc(pinchCenter.x, pinchCenter.y, 15, 0, 2 * Math.PI);
-              ctx.fillStyle = playerIndex === 0 ? 'rgba(0, 255, 255, 0.5)' : 'rgba(255, 0, 255, 0.5)';
+              ctx.fillStyle = colors[playerIndex];
               ctx.fill();
             }
 
@@ -373,12 +440,13 @@ function GameCanvas({
         if (obj.type === 'trash') {
           soundManager.playScoreSound();
           
-          let scoreDelta = 10;
+          let comboLevel = Math.floor(combosRef.current[playerIndex] / 3);
+          let scoreDelta = 10 * Math.pow(2, comboLevel);
           onScoreChange(playerIndex, scoreDelta);
           combosRef.current[playerIndex] = Math.min(combosRef.current[playerIndex] + 1, MAX_COMBO);
           
           // Floating combo text
-          if (combosRef.current[playerIndex] % 5 === 0 || combosRef.current[playerIndex] === MAX_COMBO) {
+          if (combosRef.current[playerIndex] % 3 === 0 || combosRef.current[playerIndex] === MAX_COMBO) {
             comboVisualsRef.current.push({
               x: obj.x,
               y: obj.y,
@@ -563,12 +631,12 @@ function GameCanvas({
         
         if (visual.isBig) {
           ctx.font = '900 70px Orbitron, sans-serif';
-          ctx.fillText(`COMBO ${visual.level}`, 0, 0);
+          ctx.fillText(`FEVER ${visual.level}`, 0, 0);
           ctx.font = 'bold 25px Orbitron, sans-serif';
           ctx.fillText('FEVER MODE ACTIVATED', 0, 40);
         } else {
           ctx.font = '900 45px Orbitron, sans-serif';
-          ctx.fillText(`COMBO ${visual.level}`, 0, 0);
+          ctx.fillText(`FEVER ${visual.level}`, 0, 0);
         }
         
         ctx.restore();
@@ -593,6 +661,22 @@ function GameCanvas({
         ref={canvasRef}
         className="fixed inset-0 z-40 pointer-events-none"
       />
+      
+      {cameraError && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] bg-red-500/90 text-white px-6 py-3 rounded-xl border border-red-400 font-headline shadow-2xl flex flex-col items-center gap-3">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-6 h-6" />
+            <p>Camera Error: {cameraError}. Please allow camera access.</p>
+          </div>
+          <button 
+            onClick={startCamera}
+            disabled={isCameraStarting}
+            className="bg-white text-red-500 px-4 py-2 rounded font-bold uppercase tracking-widest text-sm hover:bg-red-50 transition-colors disabled:opacity-50"
+          >
+            {isCameraStarting ? 'RETRYING...' : 'RETRY CAMERA ACCESS'}
+          </button>
+        </div>
+      )}
     </>
   );
 }
@@ -604,23 +688,51 @@ export default function App() {
   const [activeQuiz, setActiveQuiz] = useState<{
     question: string;
     answer: string;
+    difficulty: string;
     playerIndex: number;
     timeLeft: number;
   } | null>(null);
   const [quizInput, setQuizInput] = useState('');
+  const [quizFeedback, setQuizFeedback] = useState<{
+    message: string;
+    color: string;
+    playerIndex: number;
+    id: number;
+  } | null>(null);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
-  const [gameState, setGameState] = useState<'menu' | 'playing' | 'gameover'>('menu');
+  const [gameState, setGameState] = useState<'menu' | 'countdown' | 'playing' | 'gameover'>('menu');
+  const [countdownValue, setCountdownValue] = useState<number>(3);
   const [gameDuration, setGameDuration] = useState<number>(5);
   const [numPlayers, setNumPlayers] = useState<number>(1);
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [player1Name, setPlayer1Name] = useState('');
   const [player2Name, setPlayer2Name] = useState('');
   const [showNameEntry, setShowNameEntry] = useState(false);
-  const [leaderboard, setLeaderboard] = useState<{name: string, score: number}[]>([]);
+  const [leaderboard, setLeaderboard] = useState<{name: string, score: number}[]>(() => {
+    try {
+      const saved = localStorage.getItem('space_cleaner_leaderboard');
+      if (saved) return JSON.parse(saved);
+    } catch(e) {}
+    return [];
+  });
+  const [language, setLanguage] = useState<'en' | 'vi'>('en');
   const reactorRef = useRef<HTMLDivElement>(null);
 
   const scoresRef = useRef(scores);
   useEffect(() => { scoresRef.current = scores; }, [scores]);
+
+  useEffect(() => {
+    if (gameState === 'countdown') {
+      if (countdownValue < 0) {
+        setGameState('playing');
+        return;
+      }
+      const timer = setTimeout(() => {
+        setCountdownValue(prev => prev - 1);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [gameState, countdownValue]);
 
   useEffect(() => {
     if (gameState === 'playing') {
@@ -647,13 +759,17 @@ export default function App() {
       setLeaderboard(prev => {
         let newLb = [...prev];
         if (scoresRef.current[0] > 0) {
-          newLb.push({ name: player1Name.trim() || 'PLAYER 1', score: scoresRef.current[0] });
+          newLb.push({ name: player1Name.trim() || (language === 'en' ? 'PLAYER 1' : 'NGƯỜI CHƠI 1'), score: scoresRef.current[0] });
         }
         if (scoresRef.current[1] > 0) {
-          newLb.push({ name: player2Name.trim() || 'PLAYER 2', score: scoresRef.current[1] });
+          newLb.push({ name: player2Name.trim() || (language === 'en' ? 'PLAYER 2' : 'NGƯỜI CHƠI 2'), score: scoresRef.current[1] });
         }
-        return newLb.sort((a, b) => b.score - a.score).slice(0, 5);
+        const finalLb = newLb.sort((a, b) => b.score - a.score).slice(0, 100);
+        localStorage.setItem('space_cleaner_leaderboard', JSON.stringify(finalLb));
+        return finalLb;
       });
+      // Automatically show leaderboard after a short delay
+      setTimeout(() => setShowLeaderboard(true), 3500);
     }
   }, [gameState, player1Name, player2Name]);
 
@@ -688,7 +804,8 @@ export default function App() {
     setFeverModes([false, false]);
     setActiveQuiz(null);
     setTimeRemaining(gameDuration * 60);
-    setGameState('playing');
+    setCountdownValue(3);
+    setGameState('countdown');
     setShowNameEntry(false);
   };
 
@@ -724,6 +841,7 @@ export default function App() {
     setActiveQuiz({
       question: randomQuiz.q,
       answer: randomQuiz.a,
+      difficulty: randomQuiz.difficulty,
       playerIndex,
       timeLeft: 30,
     });
@@ -734,18 +852,55 @@ export default function App() {
     e.preventDefault();
     if (!activeQuiz) return;
 
-    if (quizInput.toLowerCase().trim() === activeQuiz.answer.toLowerCase()) {
-      setScores(prev => {
-        const next = [...prev] as [number, number];
-        next[activeQuiz.playerIndex] *= 2;
-        return next;
-      });
+    const isCorrect = quizInput.toLowerCase().trim() === activeQuiz.answer.toLowerCase();
+    const pIndex = activeQuiz.playerIndex;
+    let diff = 0;
+    let msg = "";
+    let color = "";
+
+    if (isCorrect) {
+      if (activeQuiz.difficulty === 'easy') {
+        diff = 50;
+        msg = "+50";
+      } else {
+        diff = scores[pIndex]; // Just for visual, it doubles
+        msg = "x2";
+      }
+      color = "text-green-400";
       confetti({
         particleCount: 100,
         spread: 70,
         origin: { y: 0.6 }
       });
+    } else {
+      if (activeQuiz.difficulty === 'easy') {
+        diff = -30;
+        msg = "-30";
+      } else {
+        diff = -50;
+        msg = "-50";
+      }
+      color = "text-red-500";
+      soundManager.playBombSound();
     }
+
+    setScores(prev => {
+      const next = [...prev] as [number, number];
+      if (isCorrect) {
+        if (activeQuiz.difficulty === 'easy') {
+          next[pIndex] += 50;
+        } else {
+          next[pIndex] *= 2;
+        }
+      } else {
+        next[pIndex] = Math.max(0, next[pIndex] + diff);
+      }
+      return next;
+    });
+
+    setQuizFeedback({ message: msg, color, playerIndex: pIndex, id: Date.now() });
+    setTimeout(() => setQuizFeedback(null), 1500);
+
     setActiveQuiz(null);
   };
 
@@ -759,6 +914,15 @@ export default function App() {
         gameState={gameState} 
         numPlayers={numPlayers} 
       />
+
+      {/* Countdown Overlay */}
+      {gameState === 'countdown' && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
+          <div className="text-white font-headline font-black text-9xl tracking-[0.2em] glow-primary animate-pulse shadow-black">
+            {countdownValue > 0 ? countdownValue : 'GO!'}
+          </div>
+        </div>
+      )}
 
       {/* Fever Mode Overlay Message */}
       {(feverModes[0] || feverModes[1]) && (
@@ -775,14 +939,18 @@ export default function App() {
         {/* Background with Brighter Image */}
         <div className="absolute inset-0 z-5 nebula-glow pointer-events-none">
           <img
-            alt="Deep space starfield"
+            alt="Deep space galaxy"
             className="w-full h-full object-cover scale-105"
-            src="https://images.unsplash.com/photo-1506318137071-a8e063b4bec0?q=80&w=2070&auto=format&fit=crop"
+            src="https://t3.ftcdn.net/jpg/01/03/88/07/360_F_103880786_1m88Eoz7V2fTYL4bM52oMReh5iLwG8f.jpg"
+            onError={(e) => {
+              // Fallback to a very similar Unsplash image if Adobe Stock blocks hotlinking
+              e.currentTarget.src = "https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=2000&auto=format&fit=crop";
+            }}
             referrerPolicy="no-referrer"
           />
         </div>
         {/* Darkened Overlay */}
-        <div className="absolute inset-0 z-6 bg-black/70 pointer-events-none"></div>
+        <div className="absolute inset-0 z-6 bg-black/85 pointer-events-none"></div>
         {/* Atmospheric Overlays */}
         <div className="absolute top-0 right-0 w-[1000px] h-[1000px] bg-tertiary/15 blur-[250px] -translate-y-1/3 translate-x-1/3 rounded-full"></div>
         <div className="absolute bottom-0 left-0 w-[800px] h-[800px] bg-secondary/15 blur-[200px] translate-y-1/3 -translate-x-1/4 rounded-full"></div>
@@ -820,7 +988,7 @@ export default function App() {
               </button>
             </form>
             <p className="text-white/40 text-[10px] mt-3 uppercase tracking-widest text-center">
-              Correct answer doubles your current score!
+              {activeQuiz.difficulty === 'easy' ? 'Correct answer gives +50 points!' : 'Correct answer doubles your current score!'}
             </p>
           </div>
         </div>
@@ -888,17 +1056,22 @@ export default function App() {
         {gameState === 'playing' && (
           <div className="absolute top-24 left-0 w-full px-4 md:px-8 z-30 pointer-events-auto flex justify-between items-start">
             {/* Player 1 Stats (Left) */}
-            <div className="flex flex-col gap-4 w-64">
-              <div className="glass-panel px-6 py-3 rounded-2xl border border-primary/30 flex flex-col items-start bg-primary/5 shadow-[0_0_20px_rgba(0,185,209,0.2)]">
+            <div className="flex flex-col gap-4 w-64 relative">
+              <div className="glass-panel px-6 py-3 rounded-2xl border border-primary/30 flex flex-col items-start bg-primary/5 shadow-[0_0_20px_rgba(0,185,209,0.2)] relative overflow-hidden">
                 <span className="font-headline text-primary/80 text-xs tracking-[0.2em] mb-1">{player1Name || 'PLAYER 1'}</span>
                 <span className="font-mono text-3xl font-black text-white glow-primary">
                   {scores[0].toLocaleString()}
                 </span>
+                {quizFeedback?.playerIndex === 0 && (
+                  <span key={quizFeedback.id} className={`absolute top-1/2 -translate-y-1/2 right-6 font-black text-3xl animate-bounce ${quizFeedback.color}`}>
+                    {quizFeedback.message}
+                  </span>
+                )}
               </div>
               <div className="flex flex-col gap-2">
                 <div className="flex justify-between items-end">
                   <span className="font-headline font-bold text-white tracking-widest text-xs uppercase">
-                    {numPlayers === 2 ? 'Fever Mode' : 'Combo Meter'}
+                    Fever Mode
                   </span>
                   <span className={`font-headline font-black text-sm ${feverModes[0] ? 'text-primary animate-pulse' : 'text-white/70'}`}>
                     {feverModes[0] ? 'MAX' : `${combos[0]}/20`}
@@ -923,12 +1096,17 @@ export default function App() {
 
             {/* Player 2 Stats (Right) */}
             {numPlayers === 2 ? (
-              <div className="flex flex-col gap-4 w-64 items-end">
-                <div className="glass-panel px-6 py-3 rounded-2xl border border-secondary/30 flex flex-col items-end bg-secondary/5 shadow-[0_0_20px_rgba(255,0,255,0.2)]">
+              <div className="flex flex-col gap-4 w-64 items-end relative">
+                <div className="glass-panel px-6 py-3 rounded-2xl border border-secondary/30 flex flex-col items-end bg-secondary/5 shadow-[0_0_20px_rgba(255,0,255,0.2)] relative overflow-hidden">
                   <span className="font-headline text-secondary/80 text-xs tracking-[0.2em] mb-1">{player2Name || 'PLAYER 2'}</span>
                   <span className="font-mono text-3xl font-black text-white shadow-[0_0_15px_rgba(255,0,255,0.5)]">
                     {scores[1].toLocaleString()}
                   </span>
+                  {quizFeedback?.playerIndex === 1 && (
+                    <span key={quizFeedback.id} className={`absolute top-1/2 -translate-y-1/2 left-6 font-black text-3xl animate-bounce ${quizFeedback.color}`}>
+                      {quizFeedback.message}
+                    </span>
+                  )}
                 </div>
                 <div className="flex flex-col gap-2 w-full">
                   <div className="flex justify-between items-end">
@@ -1006,21 +1184,23 @@ export default function App() {
           <div className="glass-panel border-primary/50 w-full max-w-md rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(0,185,209,0.3)] p-8 flex flex-col items-center gap-8">
             <div className="text-center">
               <h2 className="font-headline text-white text-3xl font-black tracking-[0.4rem] uppercase glow-primary mb-2">
-                IDENTIFY PILOTS
+                {language === 'en' ? 'IDENTIFY PILOTS' : 'NHẬP TÊN NGƯỜI CHƠI'}
               </h2>
               <p className="font-body text-white/60 text-[10px] uppercase font-bold tracking-widest">
-                ENTER YOUR CALLSIGNS TO BEGIN
+                {language === 'en' ? 'ENTER YOUR CALLSIGNS TO BEGIN' : 'ĐIỀN TÊN CỦA BẠN ĐỂ BẮT ĐẦU'}
               </p>
             </div>
 
             <div className="flex flex-col gap-6 w-full">
               <div className="flex flex-col gap-2">
-                <label className="text-primary text-[10px] font-black tracking-widest uppercase ml-1">PILOT 01</label>
+                <label className="text-primary text-[10px] font-black tracking-widest uppercase ml-1">
+                  {language === 'en' ? 'PILOT 01' : 'NGƯỜI CHƠI 01'}
+                </label>
                 <input 
                   type="text" 
                   value={player1Name}
                   onChange={(e) => setPlayer1Name(e.target.value.toUpperCase())}
-                  placeholder="ENTER NAME" 
+                  placeholder={language === 'en' ? "ENTER NAME" : "NHẬP TÊN"}
                   autoFocus
                   className="w-full bg-black/50 border-2 border-primary/30 rounded-xl px-4 py-3 text-white font-headline font-bold tracking-widest focus:outline-none focus:border-primary transition-all placeholder:text-white/20"
                 />
@@ -1028,12 +1208,14 @@ export default function App() {
 
               {numPlayers === 2 && (
                 <div className="flex flex-col gap-2">
-                  <label className="text-secondary text-[10px] font-black tracking-widest uppercase ml-1">PILOT 02</label>
+                  <label className="text-secondary text-[10px] font-black tracking-widest uppercase ml-1">
+                    {language === 'en' ? 'PILOT 02' : 'NGƯỜI CHƠI 02'}
+                  </label>
                   <input 
                     type="text" 
                     value={player2Name}
                     onChange={(e) => setPlayer2Name(e.target.value.toUpperCase())}
-                    placeholder="ENTER NAME" 
+                    placeholder={language === 'en' ? "ENTER NAME" : "NHẬP TÊN"}
                     className="w-full bg-black/50 border-2 border-secondary/30 rounded-xl px-4 py-3 text-white font-headline font-bold tracking-widest focus:outline-none focus:border-secondary transition-all placeholder:text-white/20"
                   />
                 </div>
@@ -1047,7 +1229,7 @@ export default function App() {
             >
               <div className="absolute inset-0 bg-gradient-to-r from-primary to-secondary group-hover:from-secondary group-hover:to-primary transition-all duration-300"></div>
               <span className="relative flex items-center justify-center gap-3 text-white font-headline font-black tracking-[0.2em] text-base uppercase">
-                CONFIRM & LAUNCH
+                {language === 'en' ? 'CONFIRM & LAUNCH' : 'XÁC NHẬN VÀ LÊN ĐƯỜNG'}
                 <Rocket className="w-5 h-5 group-hover:-translate-y-1 transition-transform" />
               </span>
             </button>
@@ -1056,7 +1238,7 @@ export default function App() {
               onClick={() => setShowNameEntry(false)}
               className="text-white/40 hover:text-white text-[10px] font-bold tracking-widest uppercase transition-colors"
             >
-              CANCEL
+              {language === 'en' ? 'CANCEL' : 'HỦY BỎ'}
             </button>
           </div>
         </div>
@@ -1064,14 +1246,14 @@ export default function App() {
 
       {/* Game Entry Modal */}
       {gameState === 'menu' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm pointer-events-auto">
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center p-4 bg-black/60 backdrop-blur-sm pointer-events-auto">
           <div className="glass-panel border-primary/30 w-full max-w-md rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(255,0,0,0.2)] p-8 flex flex-col items-center gap-6">
             <div className="text-center">
               <h2 className="font-headline text-white text-3xl font-black tracking-[0.4rem] uppercase glow-primary mb-2">
-                NEW GAME
+                {language === 'en' ? 'NEW GAME' : 'TRÒ CHƠI MỚI'}
               </h2>
               <p className="font-body text-white/60 text-[10px] uppercase font-bold tracking-widest">
-                SELECT PLAYERS & DURATION
+                {language === 'en' ? 'SELECT PLAYERS & DURATION' : 'CHỌN NGƯỜI CHƠI & THỜI GIAN'}
               </p>
             </div>
             
@@ -1080,13 +1262,13 @@ export default function App() {
                 onClick={() => setNumPlayers(1)}
                 className={`flex-1 py-4 rounded-xl border-2 transition-all font-headline font-black tracking-widest text-sm uppercase ${numPlayers === 1 ? 'bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(0,185,209,0.3)]' : 'bg-black/60 border-white/20 text-white/50 hover:border-white/50'}`}
               >
-                1 PLAYER
+                {language === 'en' ? '1 PLAYER' : '1 NGƯỜI'}
               </button>
               <button 
                 onClick={() => setNumPlayers(2)}
                 className={`flex-1 py-4 rounded-xl border-2 transition-all font-headline font-black tracking-widest text-sm uppercase ${numPlayers === 2 ? 'bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(0,185,209,0.3)]' : 'bg-black/60 border-white/20 text-white/50 hover:border-white/50'}`}
               >
-                2 PLAYERS
+                {language === 'en' ? '2 PLAYERS' : '2 NGƯỜI'}
               </button>
             </div>
 
@@ -1095,13 +1277,13 @@ export default function App() {
                 onClick={() => setGameDuration(5)}
                 className={`flex-1 py-4 rounded-xl border-2 transition-all font-headline font-black tracking-widest text-sm uppercase ${gameDuration === 5 ? 'bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(255,0,0,0.3)]' : 'bg-black/60 border-white/20 text-white/50 hover:border-white/50'}`}
               >
-                5 MIN
+                {language === 'en' ? '5 MIN' : '5 PHÚT'}
               </button>
               <button 
                 onClick={() => setGameDuration(10)}
                 className={`flex-1 py-4 rounded-xl border-2 transition-all font-headline font-black tracking-widest text-sm uppercase ${gameDuration === 10 ? 'bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(255,0,0,0.3)]' : 'bg-black/60 border-white/20 text-white/50 hover:border-white/50'}`}
               >
-                10 MIN
+                {language === 'en' ? '10 MIN' : '10 PHÚT'}
               </button>
             </div>
 
@@ -1109,7 +1291,10 @@ export default function App() {
               <AlertTriangle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
               <p className="text-yellow-500/90 font-body text-xs leading-relaxed text-left">
                 <strong className="font-bold block mb-1">PRO TIP</strong>
-                When dropping trash into the reactor, make sure to <strong>open your fingers wide</strong> to release it properly!
+                {language === 'en' 
+                  ? 'When dropping trash into the reactor, make sure to open your fingers wide to release it properly!'
+                  : 'Khi thả rác vào lò phản ứng trung tâm, hãy nhớ mở tay thật rộng ra để nhả rác một cách chính xác nhé!'
+                }
               </p>
             </div>
 
@@ -1120,9 +1305,24 @@ export default function App() {
               <div className="absolute inset-0 bg-gradient-to-r from-[#FF0000] to-[#FF4444] group-hover:from-[#FF4444] group-hover:to-[#FF0000] transition-all duration-300"></div>
               <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-20"></div>
               <span className="relative flex items-center justify-center gap-3 text-white font-headline font-black tracking-[0.2em] text-base uppercase">
-                START MISSION
+                {language === 'en' ? 'START MISSION' : 'BẮT ĐẦU CHƠI'}
                 <Zap className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
               </span>
+            </button>
+          </div>
+
+          <div className="absolute bottom-6 flex bg-black/60 rounded-full border border-white/20 p-1">
+            <button
+              onClick={() => setLanguage('en')}
+              className={`px-4 py-1.5 text-xs font-bold font-headline tracking-widest rounded-full transition-all ${language === 'en' ? 'bg-primary text-white shadow-lg' : 'text-white/50 hover:text-white'}`}
+            >
+              ENGLISH
+            </button>
+            <button
+              onClick={() => setLanguage('vi')}
+              className={`px-4 py-1.5 text-xs font-bold font-headline tracking-widest rounded-full transition-all ${language === 'vi' ? 'bg-primary text-white shadow-lg' : 'text-white/50 hover:text-white'}`}
+            >
+              TIẾNG VIỆT
             </button>
           </div>
         </div>
@@ -1134,26 +1334,26 @@ export default function App() {
           <div className="glass-panel border-primary/50 w-full max-w-md rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(255,0,0,0.3)] p-8 flex flex-col items-center gap-6">
             <div className="text-center">
               <h2 className="font-headline text-white text-4xl font-black tracking-[0.4rem] uppercase glow-primary mb-2">
-                MISSION OVER
+                {language === 'en' ? 'MISSION OVER' : 'HOÀN THÀNH'}
               </h2>
               <div className="flex flex-col gap-2 mt-4">
                 <p className="font-body text-primary text-sm uppercase font-bold tracking-widest">
-                  {player1Name || 'PLAYER 1'}: <span className="text-white text-xl">{scores[0].toLocaleString()} XP</span>
+                  {player1Name || (language === 'en' ? 'PLAYER 1' : 'NGƯỜI CHƠI 1')}: <span className="text-white text-xl">{scores[0].toLocaleString()} XP</span>
                 </p>
                 {numPlayers === 2 && (
                   <p className="font-body text-secondary text-sm uppercase font-bold tracking-widest">
-                    {player2Name || 'PLAYER 2'}: <span className="text-white text-xl">{scores[1].toLocaleString()} XP</span>
+                    {player2Name || (language === 'en' ? 'PLAYER 2' : 'NGƯỜI CHƠI 2')}: <span className="text-white text-xl">{scores[1].toLocaleString()} XP</span>
                   </p>
                 )}
               </div>
               {numPlayers === 2 ? (
                 <>
-                  {scores[0] > scores[1] && <p className="text-primary font-bold mt-4 text-3xl tracking-widest glow-primary">{player1Name || 'PLAYER 1'} WINS!</p>}
-                  {scores[1] > scores[0] && <p className="text-secondary font-bold mt-4 text-3xl tracking-widest glow-secondary">{player2Name || 'PLAYER 2'} WINS!</p>}
-                  {scores[0] === scores[1] && <p className="text-white font-bold mt-4 text-3xl tracking-widest">IT'S A TIE!</p>}
+                  {scores[0] > scores[1] && <p className="text-primary font-bold mt-4 text-3xl tracking-widest glow-primary">{player1Name || (language === 'en' ? 'PLAYER 1' : 'NGƯỜI CHƠI 1')} {language === 'en' ? 'WINS!' : 'CHIẾN THẮNG!'}</p>}
+                  {scores[1] > scores[0] && <p className="text-secondary font-bold mt-4 text-3xl tracking-widest glow-secondary">{player2Name || (language === 'en' ? 'PLAYER 2' : 'NGƯỜI CHƠI 2')} {language === 'en' ? 'WINS!' : 'CHIẾN THẮNG!'}</p>}
+                  {scores[0] === scores[1] && <p className="text-white font-bold mt-4 text-3xl tracking-widest">{language === 'en' ? "IT'S A TIE!" : "HÒA NHAU!"}</p>}
                 </>
               ) : (
-                <p className="text-white font-bold mt-4 text-3xl tracking-widest">WELL DONE!</p>
+                <p className="text-white font-bold mt-4 text-3xl tracking-widest">{language === 'en' ? 'WELL DONE!' : 'LÀM TỐT LẮM!'}</p>
               )}
             </div>
             
@@ -1163,7 +1363,7 @@ export default function App() {
             >
               <div className="absolute inset-0 bg-gradient-to-r from-secondary to-blue-500 group-hover:from-blue-500 group-hover:to-secondary transition-all duration-300"></div>
               <span className="relative flex items-center justify-center gap-3 text-white font-headline font-black tracking-[0.2em] text-base uppercase">
-                RETURN TO MENU
+                {language === 'en' ? 'RETURN TO MENU' : 'QUAY LẠI TRANG CHỦ'}
               </span>
             </button>
           </div>
@@ -1178,7 +1378,7 @@ export default function App() {
         >
           <Rocket className="w-5 h-5" />
           <span className="font-headline text-[8px] font-bold tracking-widest mt-0.5 uppercase">
-            NEW GAME
+            {language === 'en' ? 'NEW GAME' : 'CHƠI MỚI'}
           </span>
         </div>
         <div 
@@ -1187,7 +1387,7 @@ export default function App() {
         >
           <Trophy className="w-5 h-5" />
           <span className="font-headline text-[8px] font-bold tracking-widest mt-0.5 uppercase">
-            LEADERS
+            {language === 'en' ? 'LEADERS' : 'XẾP HẠNG'}
           </span>
         </div>
         <div
@@ -1197,51 +1397,82 @@ export default function App() {
         >
           <Play className="w-5 h-5" />
           <span className="font-headline text-[8px] font-bold tracking-widest mt-0.5 uppercase">
-            START
+            {language === 'en' ? 'START' : 'BẮT ĐẦU'}
           </span>
         </div>
       </footer>
 
       {/* Leaderboard Modal */}
       {showLeaderboard && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm pointer-events-auto">
-          <div className="glass-panel p-8 rounded-2xl border border-white/20 w-full max-w-md shadow-[0_0_30px_rgba(0,185,209,0.3)]">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-headline font-black text-white glow-primary tracking-widest uppercase">LEADERBOARD</h2>
-              <button onClick={() => setShowLeaderboard(false)} className="text-white/50 hover:text-white">
-                <X className="w-6 h-6" />
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setShowLeaderboard(false)}></div>
+          <div className="relative glass-panel w-full max-w-2xl max-h-[80vh] rounded-3xl border border-white/20 shadow-[0_0_50px_rgba(0,0,0,0.5)] flex flex-col overflow-hidden pointer-events-auto">
+            <div className="p-8 border-b border-white/10 flex justify-between items-center bg-white/5">
+              <div>
+                <h2 className="text-3xl font-headline font-black text-white tracking-tighter glow-primary">
+                  {language === 'en' ? 'GALACTIC HALL OF FAME' : 'BẢNG VÀNG VŨ TRỤ'}
+                </h2>
+                <p className="text-white/50 text-xs tracking-widest uppercase mt-1">
+                  {language === 'en' ? 'Top 100 Pilots in the Sector' : '100 Người Dọn Rác Xuất Sắc Nhất'}
+                </p>
+              </div>
+              <button 
+                onClick={() => setShowLeaderboard(false)}
+                className="p-2 hover:bg-white/10 rounded-full transition-colors"
+              >
+                <X className="w-6 h-6 text-white/50" />
               </button>
             </div>
-            <div className="flex flex-col gap-4">
-              {leaderboard.length === 0 ? (
-                <div className="text-center text-white/50 font-body py-8 uppercase tracking-widest">
-                  NO ENTRIES YET. PLAY A GAME TO RANK UP!
-                </div>
-              ) : (
-                leaderboard.map((entry, index) => {
-                  let medal = '';
-                  let borderColor = 'border-white/10';
-                  let textColor = 'text-white/50';
-                  
-                  if (index === 0) { medal = '🥇'; borderColor = 'border-yellow-500/30'; textColor = 'text-yellow-500'; }
-                  else if (index === 1) { medal = '🥈'; borderColor = 'border-gray-400/30'; textColor = 'text-gray-400'; }
-                  else if (index === 2) { medal = '🥉'; borderColor = 'border-orange-500/30'; textColor = 'text-orange-500'; }
-
-                  return (
-                    <div key={index} className={`flex items-center justify-between bg-white/5 p-3 rounded-lg border ${borderColor}`}>
-                      <div className="flex items-center gap-3">
-                        {medal ? (
-                          <span className="text-2xl">{medal}</span>
-                        ) : (
-                          <span className="text-lg font-bold text-white/50 w-8 text-center">{index + 1}</span>
-                        )}
-                        <span className="font-headline font-bold text-white uppercase">{entry.name}</span>
+            
+            <div className="flex-grow overflow-y-auto p-4 custom-scrollbar">
+              <div className="space-y-2">
+                {leaderboard.length > 0 ? (
+                  leaderboard.map((entry, i) => {
+                    const isSpotlight = i < 3;
+                    return (
+                      <div 
+                        key={i} 
+                        className={`flex items-center justify-between p-4 rounded-xl transition-all ${
+                          isSpotlight 
+                            ? i === 0 
+                              ? 'bg-yellow-500/20 border border-yellow-500/40 shadow-[0_0_15px_rgba(255,255,0,0.3)] scale-[1.02]' 
+                              : i === 1 
+                                ? 'bg-slate-300/20 border border-slate-300/40 shadow-[0_0_15px_rgba(203,213,225,0.3)] scale-[1.01]'
+                                : 'bg-amber-700/20 border border-amber-700/40 shadow-[0_0_15px_rgba(180,83,9,0.3)]'
+                            : 'bg-white/5 border border-white/5 hover:bg-white/10'
+                        }`}
+                      >
+                        <div className="flex items-center gap-6">
+                          <span className={`font-mono font-black text-2xl w-8 text-center ${
+                            i === 0 ? 'text-yellow-400' : i === 1 ? 'text-slate-300' : i === 2 ? 'text-amber-600' : 'text-white/30'
+                          }`}>
+                            {i + 1}
+                          </span>
+                          <div className="flex flex-col">
+                            <span className={`font-headline font-bold tracking-widest ${isSpotlight ? 'text-white text-lg' : 'text-white/80'}`}>
+                              {entry.name}
+                            </span>
+                            {isSpotlight && (
+                              <span className="text-[10px] text-white/40 uppercase tracking-widest">
+                                {i === 0 ? (language === 'en' ? 'Supreme Commander' : 'Chỉ Huy Tối Cao') : i === 1 ? (language === 'en' ? 'Elite Pilot' : 'Tay Lái Ưu Tú') : (language === 'en' ? 'Ace Navigator' : 'Hoa Tiêu Xuất Chúng')}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <span className={`font-mono font-black text-xl ${isSpotlight ? 'text-white' : 'text-white/60'}`}>
+                          {entry.score.toLocaleString()}
+                        </span>
                       </div>
-                      <span className={`font-mono font-bold ${textColor}`}>{entry.score.toLocaleString()} XP</span>
-                    </div>
-                  );
-                })
-              )}
+                    );
+                  })
+                ) : (
+                  <div className="text-center py-20">
+                    <p className="text-white/30 font-headline tracking-widest uppercase">
+                      {language === 'en' ? 'No mission data recorded yet' : 'Chưa có thông tin kỷ lục nào'}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

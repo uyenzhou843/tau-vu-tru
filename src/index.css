@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -18,7 +18,7 @@
   --color-on-secondary: #003a42;
   --color-on-tertiary-container: #000000;
   --color-surface-container-high: #191920;
-  --color-secondary: #00b9d1;
+  --color-secondary: #ef4444;
   --color-surface-container-lowest: #000000;
   --color-primary-fixed: #d69a62;
   --color-tertiary-container: #a501c1;
@@ -42,22 +42,22 @@
   --color-surface-container-low: #101016;
   --color-error-dim: #b3562a;
   --color-surface: #0a0a0f;
-  --color-primary: #FF0000;
+  --color-primary: #3b82f6;
   --color-secondary-container: #00535e;
   --color-on-primary-container: #3d1a00;
   --color-on-primary-fixed-variant: #4d2300;
   --color-surface-container: #15151b;
   --color-inverse-primary: #9c4e00;
-  --color-primary-container: #FF3333;
+  --color-primary-container: #60a5fa;
   --color-secondary-fixed: #21bfd4;
   --color-background: #0a0a0f;
   --color-outline-variant: #3d3c43;
   --color-surface-dim: #0a0a0f;
   --color-reactor-orange: #FF4500;
 
-  --font-headline: "Orbitron", sans-serif;
-  --font-body: "Share Tech Mono", monospace;
-  --font-label: "Orbitron", sans-serif;
+  --font-headline: "Chakra Petch", sans-serif;
+  --font-body: "Space Mono", monospace;
+  --font-label: "Chakra Petch", sans-serif;
 }
 
 @layer utilities {
@@ -65,10 +65,10 @@
     font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
   }
   .glow-primary {
-    text-shadow: 0 0 12px rgba(255, 0, 0, 0.8), 0 0 20px rgba(255, 0, 0, 0.4);
+    text-shadow: 0 0 12px rgba(59, 130, 246, 0.8), 0 0 20px rgba(59, 130, 246, 0.4);
   }
   .glow-secondary {
-    box-shadow: 0 0 30px rgba(0, 185, 209, 0.3);
+    text-shadow: 0 0 12px rgba(239, 68, 68, 0.8), 0 0 20px rgba(239, 68, 68, 0.4);
   }
   .plasma-pulse-vibrant {
     box-shadow: 0 0 45px #FF4500, inset 0 0 25px #FF8C00, 0 0 80px rgba(255, 69, 0, 0.6);
@@ -112,12 +112,12 @@
     box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
   }
   .neon-border-primary {
-    border: 1px solid rgba(255, 0, 0, 0.4);
-    box-shadow: inset 0 0 10px rgba(255, 0, 0, 0.15);
+    border: 1px solid rgba(59, 130, 246, 0.4);
+    box-shadow: inset 0 0 10px rgba(59, 130, 246, 0.15);
   }
   .neon-border-secondary {
-    border: 1px solid rgba(0, 185, 209, 0.4);
-    box-shadow: inset 0 0 10px rgba(0, 185, 209, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    box-shadow: inset 0 0 10px rgba(239, 68, 68, 0.15);
   }
 }
 
