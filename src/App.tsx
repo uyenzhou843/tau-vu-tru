@@ -32,15 +32,25 @@ class SoundManager {
     if (!this.ctx) return;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
-    osc.connect(gain);
+    const filter = this.ctx.createBiquadFilter();
+    
+    osc.connect(filter);
+    filter.connect(gain);
     gain.connect(this.ctx.destination);
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(800, this.ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(1200, this.ctx.currentTime + 0.1);
-    gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.1);
+    
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(300, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(50, this.ctx.currentTime + 0.2);
+    
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(4000, this.ctx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(100, this.ctx.currentTime + 0.2);
+    
+    gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.2);
+    
     osc.start();
-    osc.stop(this.ctx.currentTime + 0.1);
+    osc.stop(this.ctx.currentTime + 0.2);
   }
 
   playBombSound() {
@@ -82,41 +92,14 @@ const soundManager = new SoundManager();
 const TRASH_EMOJIS = ['🔩', '💥', '☄️'];
 const SATELLITE_EMOJIS = ['🛰️', '📡'];
 const BOMB_EMOJIS = ['💣'];
-const TREASURE_EMOJIS = ['🎁'];
 const FALL_SPEED = 2;
 const SPAWN_RATE = 1200; // ms
 const PINCH_THRESHOLD = 60; // px
 const GRAB_RADIUS = 60; // px
 
-const SPACE_QUIZ = [
-  // Easy Questions (10)
-  { q: "What is the red planet?", a: "mars", difficulty: "easy" },
-  { q: "What star is at the center of our solar system?", a: "sun", difficulty: "easy" },
-  { q: "How many moons does Earth have?", a: "1", difficulty: "easy" },
-  { q: "Is the Sun a planet or a star?", a: "star", difficulty: "easy" },
-  { q: "What do we call a shooting star?", a: "meteor", difficulty: "easy" },
-  { q: "What is the name of the planet we live on?", a: "earth" , difficulty: "easy" },
-  { q: "What do you call a person who travels to space?", a: "astronaut", difficulty: "easy" },
-  { q: "Which planet is the smallest in our solar system?", a: "mercury", difficulty: "easy" },
-  { q: "What is the brightest object in the night sky?", a: "moon", difficulty: "easy" },
-  { q: "What is the shape of the Earth?", a: "sphere", difficulty: "easy" },
-  
-  // Medium Questions (10)
-  { q: "What is the largest planet in our solar system?", a: "jupiter", difficulty: "medium" },
-  { q: "Which planet is known as the Blue Planet?", a: "earth", difficulty: "medium" },
-  { q: "Which planet is famous for its Great Red Spot?", a: "jupiter", difficulty: "medium" },
-  { q: "Which planet is the furthest from the Sun?", a: "neptune", difficulty: "medium" },
-  { q: "What is the name of our galaxy?", a: "milky way", difficulty: "medium" },
-  { q: "What is a group of stars that forms a pattern?", a: "constellation", difficulty: "medium" },
-  { q: "What is the name of the large telescope in space?", a: "hubble", difficulty: "medium" },
-  { q: "Who was the first person to walk on the moon?", a: "neil armstrong", difficulty: "medium" },
-  { q: "What is the name of the first artificial satellite?", a: "sputnik", difficulty: "medium" },
-  { q: "Which planet is the coldest in our solar system?", a: "uranus", difficulty: "medium" },
-];
-
 interface GameObject {
   id: number;
-  type: 'trash' | 'satellite' | 'bomb' | 'treasure';
+  type: 'trash' | 'satellite' | 'bomb';
   emoji: string;
   x: number;
   y: number;
@@ -131,17 +114,17 @@ interface GameObject {
 function GameCanvas({
   onScoreChange,
   onComboChange,
-  onTreasureScored,
   reactorRef,
   gameState,
   numPlayers,
+  onStartGame,
 }: {
   onScoreChange: (playerIndex: number, delta: number) => void;
   onComboChange: (playerIndex: number, combo: number, isFever: boolean) => void;
-  onTreasureScored: (playerIndex: number) => void;
   reactorRef: React.RefObject<HTMLDivElement | null>;
   gameState: 'menu' | 'countdown' | 'playing' | 'gameover';
   numPlayers: number;
+  onStartGame: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -271,13 +254,10 @@ function GameCanvas({
       // Spawn objects
       if (gameState === 'playing' && time - lastSpawnTimeRef.current > SPAWN_RATE) {
         const rand = Math.random();
-        let type: 'trash' | 'satellite' | 'bomb' | 'treasure' = 'trash';
+        let type: 'trash' | 'satellite' | 'bomb' = 'trash';
         let emojiList = TRASH_EMOJIS;
         
-        if (rand > 0.95 && numPlayers === 1) {
-          type = 'treasure';
-          emojiList = TREASURE_EMOJIS;
-        } else if (rand > 0.85) {
+        if (rand > 0.85) {
           type = 'bomb';
           emojiList = BOMB_EMOJIS;
         } else if (rand > 0.7) {
@@ -325,6 +305,9 @@ function GameCanvas({
             
             if (results.landmarks) {
               lastLandmarksRef.current = results.landmarks;
+              if (gameState === 'menu' && results.landmarks.length >= 2) {
+                onStartGame();
+              }
             } else {
               lastLandmarksRef.current = [];
             }
@@ -380,32 +363,27 @@ function GameCanvas({
           });
           ctx.stroke();
 
-          if (mappedLandmarks.length >= 9) {
-            // Check pinch (Thumb tip = 4, Index tip = 8)
-            const thumb = mappedLandmarks[4];
-            const indexFinger = mappedLandmarks[8];
-            const dist = Math.hypot(thumb.x - indexFinger.x, thumb.y - indexFinger.y);
-            const isPinching = dist < PINCH_THRESHOLD;
-
-            const pinchCenter = {
-              x: (thumb.x + indexFinger.x) / 2,
-              y: (thumb.y + indexFinger.y) / 2,
-            };
-
+          if (mappedLandmarks.length > 9) {
+            const handCenter = mappedLandmarks[9]; // Middle Finger MCP
             const playerIndex = playerIdx; // Use the already determined playerIdx
+            const isFever = feverModesRef.current[playerIndex];
 
-            // Draw pinch indicator
-            if (isPinching) {
-              ctx.beginPath();
-              ctx.arc(pinchCenter.x, pinchCenter.y, 15, 0, 2 * Math.PI);
-              ctx.fillStyle = colors[playerIndex];
-              ctx.fill();
+            // Draw hand aura (vacuum radius)
+            ctx.beginPath();
+            const radius = isFever ? 400 : 100;
+            ctx.arc(handCenter.x, handCenter.y, radius, 0, 2 * Math.PI);
+            ctx.fillStyle = isFever ? colors[playerIndex].replace('0.5', '0.2') : colors[playerIndex].replace('0.5', '0.1');
+            ctx.fill();
+            if (isFever) {
+              ctx.strokeStyle = strokeColors[playerIndex];
+              ctx.lineWidth = 1;
+              ctx.stroke();
             }
 
             currentHands.push({
-              x: pinchCenter.x,
-              y: pinchCenter.y,
-              isPinching,
+              x: handCenter.x,
+              y: handCenter.y,
+              isPinching: true, // Legacy field, keeping to avoid errors later
               playerIndex,
             });
           }
@@ -440,13 +418,13 @@ function GameCanvas({
         if (obj.type === 'trash') {
           soundManager.playScoreSound();
           
-          let comboLevel = Math.floor(combosRef.current[playerIndex] / 3);
-          let scoreDelta = 10 * Math.pow(2, comboLevel);
-          onScoreChange(playerIndex, scoreDelta);
           combosRef.current[playerIndex] = Math.min(combosRef.current[playerIndex] + 1, MAX_COMBO);
+          const comboActive = combosRef.current[playerIndex] >= 3;
+          let scoreDelta = 10 * (comboActive ? 2 : 1);
+          onScoreChange(playerIndex, scoreDelta);
           
           // Floating combo text
-          if (combosRef.current[playerIndex] % 3 === 0 || combosRef.current[playerIndex] === MAX_COMBO) {
+          if (comboActive) {
             comboVisualsRef.current.push({
               x: obj.x,
               y: obj.y,
@@ -464,15 +442,12 @@ function GameCanvas({
           } else {
             onComboChange(playerIndex, combosRef.current[playerIndex], feverModesRef.current[playerIndex]);
           }
-        } else if (obj.type === 'treasure') {
-          soundManager.playScoreSound();
-          onTreasureScored(playerIndex);
         } else if (obj.type === 'bomb') {
           soundManager.playBombSound();
           onScoreChange(playerIndex, -20);
           combosRef.current[playerIndex] = 0;
           onComboChange(playerIndex, 0, false);
-        } else {
+        } else if (obj.type === 'satellite') {
           soundManager.playBombSound();
           onScoreChange(playerIndex, -10);
           combosRef.current[playerIndex] = 0;
@@ -483,30 +458,25 @@ function GameCanvas({
       // Update Objects
       const playersHolding = new Set<number>();
       
-      // First pass: identify players already holding objects
-      for (const obj of objectsRef.current) {
-        if (obj.isGrabbed && obj.grabbedByPlayerIndex !== null) {
-          playersHolding.add(obj.grabbedByPlayerIndex);
-        }
-      }
-
+      // Process Objects
       for (let i = objectsRef.current.length - 1; i >= 0; i--) {
         const obj = objectsRef.current[i];
 
-        // 1. Vacuum (Fever)
+        // 1. Vacuum (Auto-grab on touch)
         if (obj.vacuumedByPlayerIndex === null) {
           for (const hand of currentHands) {
-            if (feverModesRef.current[hand.playerIndex]) {
-              const dist = Math.hypot(obj.x - hand.x, obj.y - hand.y);
-              if (dist < 250) { // Vacuum radius
-                obj.vacuumedByPlayerIndex = hand.playerIndex;
-                obj.isGrabbed = false;
-                break;
-              }
+            const isFever = feverModesRef.current[hand.playerIndex];
+            const dist = Math.hypot(obj.x - hand.x, obj.y - hand.y);
+            const radius = isFever ? 400 : 120; // Massive in fever, comfortable in normal
+            if (dist < radius) {
+              obj.vacuumedByPlayerIndex = hand.playerIndex;
+              obj.isGrabbed = false;
+              break;
             }
           }
         }
 
+        // 2. Process Vacuum Animation
         if (obj.vacuumedByPlayerIndex !== null) {
           const dx = reactorCenterX - obj.x;
           const dy = reactorCenterY - obj.y;
@@ -515,65 +485,29 @@ function GameCanvas({
             handleObjectScored(obj, obj.vacuumedByPlayerIndex);
             objectsRef.current.splice(i, 1);
           } else {
-            obj.x += (dx / dist) * 25;
-            obj.y += (dy / dist) * 25;
+            // High speed satisfying vacuum
+            obj.x += (dx / dist) * 45;
+            obj.y += (dy / dist) * 45;
           }
           continue;
         }
 
-        // 2. Normal Grab
-        if (obj.isGrabbed) {
-          const grabbingHand = currentHands.find((h) => h.playerIndex === obj.grabbedByPlayerIndex);
-          if (grabbingHand && grabbingHand.isPinching) {
-            obj.x = grabbingHand.x;
-            obj.y = grabbingHand.y;
-          } else {
-            obj.isGrabbed = false;
-            if (
-              obj.x > reactorBounds.left &&
-              obj.x < reactorBounds.right &&
-              obj.y > reactorBounds.top &&
-              obj.y < reactorBounds.bottom
-            ) {
-              handleObjectScored(obj, obj.grabbedByPlayerIndex!);
-              objectsRef.current.splice(i, 1);
-              continue;
-            }
-            obj.grabbedByPlayerIndex = null;
-          }
+        // 3. Normal Falling (not vacuumed)
+        obj.x += obj.vx;
+        obj.y += obj.vy;
+
+        if (obj.isRegretting) {
+          obj.vy += 0.05;
         } else {
-          obj.x += obj.vx;
-          obj.y += obj.vy;
-
-          if (obj.isRegretting) {
-            obj.vy += 0.05;
-          } else {
-            if (obj.y > reactorBounds.top && obj.y < reactorBounds.bottom) {
-              if (obj.x < reactorBounds.left && obj.x > reactorBounds.left - 60) {
-                obj.isRegretting = true;
-                obj.vx = -2;
-                obj.vy = -3;
-              } else if (obj.x > reactorBounds.right && obj.x < reactorBounds.right + 60) {
-                obj.isRegretting = true;
-                obj.vx = 2;
-                obj.vy = -3;
-              }
-            }
-          }
-
-          for (const hand of currentHands) {
-            const isFever = feverModesRef.current[hand.playerIndex];
-            if (hand.isPinching && !playersHolding.has(hand.playerIndex)) {
-              const dist = Math.hypot(obj.x - hand.x, obj.y - hand.y);
-              const currentGrabRadius = isFever ? 200 : GRAB_RADIUS;
-              if (dist < currentGrabRadius) {
-                obj.isGrabbed = true;
-                obj.grabbedByPlayerIndex = hand.playerIndex;
-                obj.isRegretting = false;
-                obj.vx = 0;
-                playersHolding.add(hand.playerIndex);
-                break;
-              }
+          if (obj.y > reactorBounds.top && obj.y < reactorBounds.bottom) {
+            if (obj.x < reactorBounds.left && obj.x > reactorBounds.left - 60) {
+              obj.isRegretting = true;
+              obj.vx = -2;
+              obj.vy = -3;
+            } else if (obj.x > reactorBounds.right && obj.x < reactorBounds.right + 60) {
+              obj.isRegretting = true;
+              obj.vx = 2;
+              obj.vy = -3;
             }
           }
         }
@@ -636,7 +570,7 @@ function GameCanvas({
           ctx.fillText('FEVER MODE ACTIVATED', 0, 40);
         } else {
           ctx.font = '900 45px Orbitron, sans-serif';
-          ctx.fillText(`FEVER ${visual.level}`, 0, 0);
+          ctx.fillText(`COMBO ${visual.level}`, 0, 0);
         }
         
         ctx.restore();
@@ -685,29 +619,9 @@ export default function App() {
   const [scores, setScores] = useState<[number, number]>([0, 0]);
   const [combos, setCombos] = useState<[number, number]>([0, 0]);
   const [feverModes, setFeverModes] = useState<[boolean, boolean]>([false, false]);
-  const [activeQuiz, setActiveQuiz] = useState<{
-    question: string;
-    answer: string;
-    difficulty: string;
-    playerIndex: number;
-    timeLeft: number;
-  } | null>(null);
-  const [quizInput, setQuizInput] = useState('');
-  const [quizFeedback, setQuizFeedback] = useState<{
-    message: string;
-    color: string;
-    playerIndex: number;
-    id: number;
-  } | null>(null);
   const [gameState, setGameState] = useState<'menu' | 'countdown' | 'playing' | 'gameover'>('menu');
   const [countdownValue, setCountdownValue] = useState<number>(3);
-  const [gameDuration, setGameDuration] = useState<number>(5);
-  const [numPlayers, setNumPlayers] = useState<number>(1);
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
-  const [player1Name, setPlayer1Name] = useState('');
-  const [player2Name, setPlayer2Name] = useState('');
-  const [showNameEntry, setShowNameEntry] = useState(false);
-  const [language, setLanguage] = useState<'en' | 'vi'>('en');
   const reactorRef = useRef<HTMLDivElement>(null);
 
   const scoresRef = useRef(scores);
@@ -749,43 +663,17 @@ export default function App() {
     } else if (gameState === 'gameover') {
       // Confetti and sound already triggered when timeRemaining reaches 0
     }
-  }, [gameState, player1Name, player2Name]);
+  }, [gameState]);
 
-  // Quiz timer effect
-  useEffect(() => {
-    if (activeQuiz && gameState === 'playing') {
-      const timer = setInterval(() => {
-        setActiveQuiz(prev => {
-          if (!prev) return null;
-          if (prev.timeLeft <= 1) {
-            clearInterval(timer);
-            return null;
-          }
-          return { ...prev, timeLeft: prev.timeLeft - 1 };
-        });
-      }, 1000);
-      return () => clearInterval(timer);
-    }
-  }, [activeQuiz, gameState]);
-
-  const startGame = () => {
-    setShowNameEntry(true);
-  };
-
-  const confirmNamesAndStart = () => {
-    if (numPlayers === 1 && !player1Name.trim()) return;
-    if (numPlayers === 2 && (!player1Name.trim() || !player2Name.trim())) return;
-    
+  const startGame = useCallback(() => {
     soundManager.init();
     setScores([0, 0]);
     setCombos([0, 0]);
     setFeverModes([false, false]);
-    setActiveQuiz(null);
-    setTimeRemaining(gameDuration * 60);
+    setTimeRemaining(5 * 60);
     setCountdownValue(3);
     setGameState('countdown');
-    setShowNameEntry(false);
-  };
+  }, []);
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -814,83 +702,15 @@ export default function App() {
     });
   }, []);
 
-  const handleTreasureScored = useCallback((playerIndex: number) => {
-    const randomQuiz = SPACE_QUIZ[Math.floor(Math.random() * SPACE_QUIZ.length)];
-    setActiveQuiz({
-      question: randomQuiz.q,
-      answer: randomQuiz.a,
-      difficulty: randomQuiz.difficulty,
-      playerIndex,
-      timeLeft: 30,
-    });
-    setQuizInput('');
-  }, []);
-
-  const submitQuiz = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activeQuiz) return;
-
-    const isCorrect = quizInput.toLowerCase().trim() === activeQuiz.answer.toLowerCase();
-    const pIndex = activeQuiz.playerIndex;
-    let diff = 0;
-    let msg = "";
-    let color = "";
-
-    if (isCorrect) {
-      if (activeQuiz.difficulty === 'easy') {
-        diff = 50;
-        msg = "+50";
-      } else {
-        diff = scores[pIndex]; // Just for visual, it doubles
-        msg = "x2";
-      }
-      color = "text-green-400";
-      confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 }
-      });
-    } else {
-      if (activeQuiz.difficulty === 'easy') {
-        diff = -30;
-        msg = "-30";
-      } else {
-        diff = -50;
-        msg = "-50";
-      }
-      color = "text-red-500";
-      soundManager.playBombSound();
-    }
-
-    setScores(prev => {
-      const next = [...prev] as [number, number];
-      if (isCorrect) {
-        if (activeQuiz.difficulty === 'easy') {
-          next[pIndex] += 50;
-        } else {
-          next[pIndex] *= 2;
-        }
-      } else {
-        next[pIndex] = Math.max(0, next[pIndex] + diff);
-      }
-      return next;
-    });
-
-    setQuizFeedback({ message: msg, color, playerIndex: pIndex, id: Date.now() });
-    setTimeout(() => setQuizFeedback(null), 1500);
-
-    setActiveQuiz(null);
-  };
-
   return (
     <div className="bg-background text-on-surface font-body overflow-hidden select-none min-h-screen">
       <GameCanvas 
         onScoreChange={handleScoreChange} 
         onComboChange={handleComboChange} 
-        onTreasureScored={handleTreasureScored}
         reactorRef={reactorRef} 
         gameState={gameState} 
-        numPlayers={numPlayers} 
+        numPlayers={1}
+        onStartGame={startGame}
       />
 
       {/* Countdown Overlay */}
@@ -934,99 +754,9 @@ export default function App() {
         <div className="absolute bottom-0 left-0 w-[800px] h-[800px] bg-secondary/15 blur-[200px] translate-y-1/3 -translate-x-1/4 rounded-full"></div>
       </div>
 
-      {/* Quiz Overlay */}
-      {activeQuiz && gameState === 'playing' && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-50 w-full max-w-lg px-4 pointer-events-auto">
-          <div className={`glass-panel p-6 rounded-2xl border-2 ${activeQuiz.playerIndex === 0 ? 'border-primary' : 'border-secondary'} shadow-[0_0_30px_rgba(0,0,0,0.5)]`}>
-            <div className="flex justify-between items-center mb-4">
-              <span className={`font-headline font-bold text-xs tracking-widest ${activeQuiz.playerIndex === 0 ? 'text-primary' : 'text-secondary'}`}>
-                {activeQuiz.playerIndex === 0 ? player1Name : player2Name}'S SPACE QUIZ
-              </span>
-              <span className="font-mono text-xl font-bold text-white animate-pulse">
-                {activeQuiz.timeLeft}s
-              </span>
-            </div>
-            <h3 className="text-white font-headline text-lg mb-4 leading-tight">
-              {activeQuiz.question}
-            </h3>
-            <form onSubmit={submitQuiz} className="flex gap-2">
-              <input
-                autoFocus
-                type="text"
-                value={quizInput}
-                onChange={(e) => setQuizInput(e.target.value)}
-                placeholder="Type your answer..."
-                className="flex-grow bg-black/50 border border-white/20 rounded-xl px-4 py-2 text-white font-mono focus:outline-none focus:border-primary transition-all"
-              />
-              <button
-                type="submit"
-                className={`px-6 py-2 rounded-xl font-headline font-bold text-white transition-all ${activeQuiz.playerIndex === 0 ? 'bg-primary hover:bg-primary/80' : 'bg-secondary hover:bg-secondary/80'}`}
-              >
-                SUBMIT
-              </button>
-            </form>
-            <p className="text-white/40 text-[10px] mt-3 uppercase tracking-widest text-center">
-              {activeQuiz.difficulty === 'easy' ? 'Correct answer gives +50 points!' : 'Correct answer doubles your current score!'}
-            </p>
-          </div>
-        </div>
-      )}
-
       <div className="fixed inset-0 z-15 hologram-overlay opacity-40 pointer-events-none"></div>
       <div className="fixed inset-0 z-15 grain pointer-events-none"></div>
       <div className="fixed inset-0 z-15 scanline opacity-5 pointer-events-none"></div>
-
-      {/* Top Navigation App Bar */}
-      <header className="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-8 py-4 backdrop-blur-2xl bg-surface/60 border-b border-white/10">
-        <div className="flex items-center gap-6 chromatic-aberration">
-          <span className="text-xl font-bold tracking-tight font-headline glow-primary">
-            NEBULA_OS.v2
-          </span>
-          <div className="h-5 w-[1px] bg-white/20"></div>
-          <div className="flex items-center gap-4">
-            <input 
-              type="text" 
-              value={player1Name}
-              onChange={(e) => setPlayer1Name(e.target.value)}
-              placeholder="PLAYER 1 NAME" 
-              className="bg-black/50 border border-white/20 rounded px-3 py-1 text-xs text-white focus:outline-none focus:border-primary pointer-events-auto"
-            />
-            {numPlayers === 2 && (
-              <>
-                <span className="text-white/50 text-xs">VS</span>
-                <input 
-                  type="text" 
-                  value={player2Name}
-                  onChange={(e) => setPlayer2Name(e.target.value)}
-                  placeholder="PLAYER 2 NAME" 
-                  className="bg-black/50 border border-white/20 rounded px-3 py-1 text-xs text-white focus:outline-none focus:border-secondary pointer-events-auto"
-                />
-              </>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4">
-          <button 
-            onClick={() => setGameState('menu')}
-            className="flex items-center gap-2 px-4 py-2 bg-primary/20 hover:bg-primary/40 border border-primary/50 rounded-lg transition-all pointer-events-auto group"
-          >
-            <Rocket className="w-4 h-4 text-primary group-hover:scale-110 transition-transform" />
-            <span className="font-headline font-bold tracking-widest text-[10px] uppercase text-white">
-              NEW GAME
-            </span>
-          </button>
-          <button 
-            onClick={() => setShowLeaderboard(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 border border-white/20 rounded-lg transition-all pointer-events-auto group"
-          >
-            <Trophy className="w-4 h-4 text-yellow-500 group-hover:scale-110 transition-transform" />
-            <span className="font-headline font-bold tracking-widest text-[10px] uppercase text-white">
-              LEADERBOARD
-            </span>
-          </button>
-        </div>
-      </header>
 
       {/* UI Overlay Elements */}
       <main className="relative z-20 h-screen w-full pt-20 flex flex-col pointer-events-none">
@@ -1036,20 +766,15 @@ export default function App() {
             {/* Player 1 Stats (Left) */}
             <div className="flex flex-col gap-4 w-64 relative">
               <div className="glass-panel px-6 py-3 rounded-2xl border border-primary/30 flex flex-col items-start bg-primary/5 shadow-[0_0_20px_rgba(0,185,209,0.2)] relative overflow-hidden">
-                <span className="font-headline text-primary/80 text-xs tracking-[0.2em] mb-1">{player1Name || 'PLAYER 1'}</span>
+                <span className="font-headline text-primary/80 text-xs tracking-[0.2em] mb-1">NGƯỜI CHƠI</span>
                 <span className="font-mono text-3xl font-black text-white glow-primary">
                   {scores[0].toLocaleString()}
                 </span>
-                {quizFeedback?.playerIndex === 0 && (
-                  <span key={quizFeedback.id} className={`absolute top-1/2 -translate-y-1/2 right-6 font-black text-3xl animate-bounce ${quizFeedback.color}`}>
-                    {quizFeedback.message}
-                  </span>
-                )}
               </div>
               <div className="flex flex-col gap-2">
                 <div className="flex justify-between items-end">
                   <span className="font-headline font-bold text-white tracking-widest text-xs uppercase">
-                    Fever Mode
+                    COMBO
                   </span>
                   <span className={`font-headline font-black text-sm ${feverModes[0] ? 'text-primary animate-pulse' : 'text-white/70'}`}>
                     {feverModes[0] ? 'MAX' : `${combos[0]}/20`}
@@ -1061,7 +786,7 @@ export default function App() {
                     style={{ width: `${(combos[0] / 20) * 100}%` }}
                   ></div>
                 </div>
-                {feverModes[0] && <div className="text-primary text-[10px] font-bold tracking-widest animate-pulse mt-1">FEVER MODE!</div>}
+                {feverModes[0] && <div className="text-primary text-[10px] font-bold tracking-widest animate-pulse mt-1">COMBO MAX!</div>}
               </div>
             </div>
 
@@ -1072,39 +797,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Player 2 Stats (Right) */}
-            {numPlayers === 2 ? (
-              <div className="flex flex-col gap-4 w-64 items-end relative">
-                <div className="glass-panel px-6 py-3 rounded-2xl border border-secondary/30 flex flex-col items-end bg-secondary/5 shadow-[0_0_20px_rgba(255,0,255,0.2)] relative overflow-hidden">
-                  <span className="font-headline text-secondary/80 text-xs tracking-[0.2em] mb-1">{player2Name || 'PLAYER 2'}</span>
-                  <span className="font-mono text-3xl font-black text-white shadow-[0_0_15px_rgba(255,0,255,0.5)]">
-                    {scores[1].toLocaleString()}
-                  </span>
-                  {quizFeedback?.playerIndex === 1 && (
-                    <span key={quizFeedback.id} className={`absolute top-1/2 -translate-y-1/2 left-6 font-black text-3xl animate-bounce ${quizFeedback.color}`}>
-                      {quizFeedback.message}
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-col gap-2 w-full">
-                  <div className="flex justify-between items-end">
-                    <span className="font-headline font-bold text-white tracking-widest text-xs uppercase">Fever Mode</span>
-                    <span className={`font-headline font-black text-sm ${feverModes[1] ? 'text-secondary animate-pulse' : 'text-white/70'}`}>
-                      {feverModes[1] ? 'MAX' : `${combos[1]}/20`}
-                    </span>
-                  </div>
-                  <div className="h-2 bg-black/50 rounded-full overflow-hidden border border-white/10 p-0.5">
-                    <div 
-                      className={`h-full rounded-full transition-all duration-300 ${feverModes[1] ? 'bg-secondary shadow-[0_0_10px_rgba(255,0,255,0.8)]' : 'bg-secondary/50'}`}
-                      style={{ width: `${(combos[1] / 20) * 100}%` }}
-                    ></div>
-                  </div>
-                  {feverModes[1] && <div className="text-secondary text-[10px] font-bold tracking-widest animate-pulse mt-1 text-right">FEVER MODE!</div>}
-                </div>
-              </div>
-            ) : (
-              <div className="w-64"></div>
-            )}
+            <div className="w-64"></div>
           </div>
         )}
 
@@ -1156,153 +849,13 @@ export default function App() {
         </div>
       </main>
 
-      {/* Name Entry Modal */}
-      {showNameEntry && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl pointer-events-auto">
-          <div className="glass-panel border-primary/50 w-full max-w-md rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(0,185,209,0.3)] p-8 flex flex-col items-center gap-8">
-            <div className="text-center">
-              <h2 className="font-headline text-white text-3xl font-black tracking-[0.4rem] uppercase glow-primary mb-2">
-                {language === 'en' ? 'IDENTIFY PILOTS' : 'NHẬP TÊN NGƯỜI CHƠI'}
-              </h2>
-              <p className="font-body text-white/60 text-[10px] uppercase font-bold tracking-widest">
-                {language === 'en' ? 'ENTER YOUR CALLSIGNS TO BEGIN' : 'ĐIỀN TÊN CỦA BẠN ĐỂ BẮT ĐẦU'}
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-6 w-full">
-              <div className="flex flex-col gap-2">
-                <label className="text-primary text-[10px] font-black tracking-widest uppercase ml-1">
-                  {language === 'en' ? 'PILOT 01' : 'NGƯỜI CHƠI 01'}
-                </label>
-                <input 
-                  type="text" 
-                  value={player1Name}
-                  onChange={(e) => setPlayer1Name(e.target.value.toUpperCase())}
-                  placeholder={language === 'en' ? "ENTER NAME" : "NHẬP TÊN"}
-                  autoFocus
-                  className="w-full bg-black/50 border-2 border-primary/30 rounded-xl px-4 py-3 text-white font-headline font-bold tracking-widest focus:outline-none focus:border-primary transition-all placeholder:text-white/20"
-                />
-              </div>
-
-              {numPlayers === 2 && (
-                <div className="flex flex-col gap-2">
-                  <label className="text-secondary text-[10px] font-black tracking-widest uppercase ml-1">
-                    {language === 'en' ? 'PILOT 02' : 'NGƯỜI CHƠI 02'}
-                  </label>
-                  <input 
-                    type="text" 
-                    value={player2Name}
-                    onChange={(e) => setPlayer2Name(e.target.value.toUpperCase())}
-                    placeholder={language === 'en' ? "ENTER NAME" : "NHẬP TÊN"}
-                    className="w-full bg-black/50 border-2 border-secondary/30 rounded-xl px-4 py-3 text-white font-headline font-bold tracking-widest focus:outline-none focus:border-secondary transition-all placeholder:text-white/20"
-                  />
-                </div>
-              )}
-            </div>
-
-            <button 
-              onClick={confirmNamesAndStart}
-              disabled={(numPlayers === 1 && !player1Name.trim()) || (numPlayers === 2 && (!player1Name.trim() || !player2Name.trim()))}
-              className="group relative w-full h-14 rounded-xl overflow-hidden transition-all active:scale-95 shadow-[0_10px_30px_rgba(0,185,209,0.4)] disabled:opacity-50 disabled:pointer-events-none"
-            >
-              <div className="absolute inset-0 bg-gradient-to-r from-primary to-secondary group-hover:from-secondary group-hover:to-primary transition-all duration-300"></div>
-              <span className="relative flex items-center justify-center gap-3 text-white font-headline font-black tracking-[0.2em] text-base uppercase">
-                {language === 'en' ? 'CONFIRM & LAUNCH' : 'XÁC NHẬN VÀ LÊN ĐƯỜNG'}
-                <Rocket className="w-5 h-5 group-hover:-translate-y-1 transition-transform" />
-              </span>
-            </button>
-            
-            <button 
-              onClick={() => setShowNameEntry(false)}
-              className="text-white/40 hover:text-white text-[10px] font-bold tracking-widest uppercase transition-colors"
-            >
-              {language === 'en' ? 'CANCEL' : 'HỦY BỎ'}
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Game Entry Modal */}
       {gameState === 'menu' && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center p-4 bg-black/60 backdrop-blur-sm pointer-events-auto">
-          <div className="glass-panel border-primary/30 w-full max-w-md rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(255,0,0,0.2)] p-8 flex flex-col items-center gap-6">
-            <div className="text-center">
-              <h2 className="font-headline text-white text-3xl font-black tracking-[0.4rem] uppercase glow-primary mb-2">
-                {language === 'en' ? 'NEW GAME' : 'TRÒ CHƠI MỚI'}
-              </h2>
-              <p className="font-body text-white/60 text-[10px] uppercase font-bold tracking-widest">
-                {language === 'en' ? 'SELECT PLAYERS & DURATION' : 'CHỌN NGƯỜI CHƠI & THỜI GIAN'}
-              </p>
-            </div>
-            
-            <div className="flex gap-4 w-full">
-              <button 
-                onClick={() => setNumPlayers(1)}
-                className={`flex-1 py-4 rounded-xl border-2 transition-all font-headline font-black tracking-widest text-sm uppercase ${numPlayers === 1 ? 'bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(0,185,209,0.3)]' : 'bg-black/60 border-white/20 text-white/50 hover:border-white/50'}`}
-              >
-                {language === 'en' ? '1 PLAYER' : '1 NGƯỜI'}
-              </button>
-              <button 
-                onClick={() => setNumPlayers(2)}
-                className={`flex-1 py-4 rounded-xl border-2 transition-all font-headline font-black tracking-widest text-sm uppercase ${numPlayers === 2 ? 'bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(0,185,209,0.3)]' : 'bg-black/60 border-white/20 text-white/50 hover:border-white/50'}`}
-              >
-                {language === 'en' ? '2 PLAYERS' : '2 NGƯỜI'}
-              </button>
-            </div>
-
-            <div className="flex gap-4 w-full">
-              <button 
-                onClick={() => setGameDuration(5)}
-                className={`flex-1 py-4 rounded-xl border-2 transition-all font-headline font-black tracking-widest text-sm uppercase ${gameDuration === 5 ? 'bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(255,0,0,0.3)]' : 'bg-black/60 border-white/20 text-white/50 hover:border-white/50'}`}
-              >
-                {language === 'en' ? '5 MIN' : '5 PHÚT'}
-              </button>
-              <button 
-                onClick={() => setGameDuration(10)}
-                className={`flex-1 py-4 rounded-xl border-2 transition-all font-headline font-black tracking-widest text-sm uppercase ${gameDuration === 10 ? 'bg-primary/20 border-primary text-white shadow-[0_0_20px_rgba(255,0,0,0.3)]' : 'bg-black/60 border-white/20 text-white/50 hover:border-white/50'}`}
-              >
-                {language === 'en' ? '10 MIN' : '10 PHÚT'}
-              </button>
-            </div>
-
-            <div className="w-full bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
-              <p className="text-yellow-500/90 font-body text-xs leading-relaxed text-left">
-                <strong className="font-bold block mb-1">PRO TIP</strong>
-                {language === 'en' 
-                  ? 'When dropping trash into the reactor, make sure to open your fingers wide to release it properly!'
-                  : 'Khi thả rác vào lò phản ứng trung tâm, hãy nhớ mở tay thật rộng ra để nhả rác một cách chính xác nhé!'
-                }
-              </p>
-            </div>
-
-            <button 
-              onClick={startGame}
-              className="group relative w-full h-14 rounded-xl overflow-hidden transition-all active:scale-95 shadow-[0_10px_30px_rgba(255,0,0,0.4)]"
-            >
-              <div className="absolute inset-0 bg-gradient-to-r from-[#FF0000] to-[#FF4444] group-hover:from-[#FF4444] group-hover:to-[#FF0000] transition-all duration-300"></div>
-              <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-20"></div>
-              <span className="relative flex items-center justify-center gap-3 text-white font-headline font-black tracking-[0.2em] text-base uppercase">
-                {language === 'en' ? 'START MISSION' : 'BẮT ĐẦU CHƠI'}
-                <Zap className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-              </span>
-            </button>
-          </div>
-
-          <div className="absolute bottom-6 flex bg-black/60 rounded-full border border-white/20 p-1">
-            <button
-              onClick={() => setLanguage('en')}
-              className={`px-4 py-1.5 text-xs font-bold font-headline tracking-widest rounded-full transition-all ${language === 'en' ? 'bg-primary text-white shadow-lg' : 'text-white/50 hover:text-white'}`}
-            >
-              ENGLISH
-            </button>
-            <button
-              onClick={() => setLanguage('vi')}
-              className={`px-4 py-1.5 text-xs font-bold font-headline tracking-widest rounded-full transition-all ${language === 'vi' ? 'bg-primary text-white shadow-lg' : 'text-white/50 hover:text-white'}`}
-            >
-              TIẾNG VIỆT
-            </button>
-          </div>
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center p-4 backdrop-blur-sm pointer-events-none">
+          <h1 className="font-headline text-white text-5xl font-black tracking-[0.2em] relative uppercase glow-primary mb-8 text-center drop-shadow-[0_0_20px_rgba(255,255,255,0.5)]">
+            ĐƯA LÊN 2 BÀN TAY<br/>ĐỂ BẮT ĐẦU TRÒ CHƠI
+            <div className="absolute -inset-4 border-2 border-primary/20 blur-sm rounded-3xl animate-pulse"></div>
+          </h1>
         </div>
       )}
 
@@ -1312,27 +865,14 @@ export default function App() {
           <div className="glass-panel border-primary/50 w-full max-w-md rounded-2xl overflow-hidden shadow-[0_0_50px_rgba(255,0,0,0.3)] p-8 flex flex-col items-center gap-6">
             <div className="text-center">
               <h2 className="font-headline text-white text-4xl font-black tracking-[0.4rem] uppercase glow-primary mb-2">
-                {language === 'en' ? 'MISSION OVER' : 'HOÀN THÀNH'}
+                HOÀN THÀNH
               </h2>
               <div className="flex flex-col gap-2 mt-4">
                 <p className="font-body text-primary text-sm uppercase font-bold tracking-widest">
-                  {player1Name || (language === 'en' ? 'PLAYER 1' : 'NGƯỜI CHƠI 1')}: <span className="text-white text-xl">{scores[0].toLocaleString()} XP</span>
+                  ĐIỂM SỐ: <span className="text-white text-xl">{scores[0].toLocaleString()} XP</span>
                 </p>
-                {numPlayers === 2 && (
-                  <p className="font-body text-secondary text-sm uppercase font-bold tracking-widest">
-                    {player2Name || (language === 'en' ? 'PLAYER 2' : 'NGƯỜI CHƠI 2')}: <span className="text-white text-xl">{scores[1].toLocaleString()} XP</span>
-                  </p>
-                )}
               </div>
-              {numPlayers === 2 ? (
-                <>
-                  {scores[0] > scores[1] && <p className="text-primary font-bold mt-4 text-3xl tracking-widest glow-primary">{player1Name || (language === 'en' ? 'PLAYER 1' : 'NGƯỜI CHƠI 1')} {language === 'en' ? 'WINS!' : 'CHIẾN THẮNG!'}</p>}
-                  {scores[1] > scores[0] && <p className="text-secondary font-bold mt-4 text-3xl tracking-widest glow-secondary">{player2Name || (language === 'en' ? 'PLAYER 2' : 'NGƯỜI CHƠI 2')} {language === 'en' ? 'WINS!' : 'CHIẾN THẮNG!'}</p>}
-                  {scores[0] === scores[1] && <p className="text-white font-bold mt-4 text-3xl tracking-widest">{language === 'en' ? "IT'S A TIE!" : "HÒA NHAU!"}</p>}
-                </>
-              ) : (
-                <p className="text-primary font-bold mt-4 text-3xl tracking-widest glow-primary">{language === 'en' ? 'CONGRATULATIONS' : 'CHÚC MỪNG'} {player1Name || (language === 'en' ? 'PLAYER' : 'NGƯỜI CHƠI')}!</p>
-              )}
+              <p className="text-primary font-bold mt-4 text-3xl tracking-widest glow-primary">LÀM TỐT LẮM!</p>
             </div>
             
             <button 
@@ -1341,7 +881,7 @@ export default function App() {
             >
               <div className="absolute inset-0 bg-gradient-to-r from-secondary to-blue-500 group-hover:from-blue-500 group-hover:to-secondary transition-all duration-300"></div>
               <span className="relative flex items-center justify-center gap-3 text-white font-headline font-black tracking-[0.2em] text-base uppercase">
-                {language === 'en' ? 'RETURN TO MENU' : 'QUAY LẠI TRANG CHỦ'}
+                QUAY LẠI TRANG CHỦ
               </span>
             </button>
           </div>
@@ -1356,7 +896,7 @@ export default function App() {
         >
           <Rocket className="w-5 h-5" />
           <span className="font-headline text-[8px] font-bold tracking-widest mt-0.5 uppercase">
-            {language === 'en' ? 'NEW GAME' : 'CHƠI MỚI'}
+            CHƠI LẠI
           </span>
         </div>
         <div 
@@ -1364,7 +904,7 @@ export default function App() {
         >
           <Trophy className="w-5 h-5 opacity-50" />
           <span className="font-headline text-[8px] font-bold tracking-widest mt-0.5 uppercase opacity-50">
-            {language === 'en' ? 'LEADERS' : 'XẾP HẠNG'}
+            XẾP HẠNG
           </span>
         </div>
         <div
@@ -1374,7 +914,7 @@ export default function App() {
         >
           <Play className="w-5 h-5" />
           <span className="font-headline text-[8px] font-bold tracking-widest mt-0.5 uppercase">
-            {language === 'en' ? 'START' : 'BẮT ĐẦU'}
+            BẮT ĐẦU
           </span>
         </div>
       </footer>
